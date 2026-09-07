@@ -1,0 +1,17 @@
+# Build output
+*.phar
+build/
+dist/
+
+# Local server data
+plugin_data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
