@@ -15,6 +15,13 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/License-MIT-68737a?style=flat-square"></a>
 </p>
 
+<p align="center">
+  <a href="CHANGELOG.md">Changelog</a> &nbsp;·&nbsp;
+  <a href="CREDITS.md">Credits</a> &nbsp;·&nbsp;
+  <a href="LICENSE">License</a> &nbsp;·&nbsp;
+  <a href="https://github.com/ybriismc/StonePerms/releases/latest">Download</a>
+</p>
+
 ---
 
 StonePerms stores and resolves permissions for PocketMine-MP and applies the result through the
@@ -221,15 +228,10 @@ bridge — are deliberately left alone rather than pulled in for the sake of it.
 
 ## Credits
 
-| | |
-| --- | --- |
-| Original StonePerms, the Endstone plugin | **Daniel-Ric** — https://github.com/Daniel-Ric/StonePerms |
-| EasyLibrary | **imperazim** — https://gitlab.com/ImperaZim/EasyLibrary |
-| StonePerms for PocketMine-MP | **yBriisMC** |
-
-This build is a port. The permission model, the storage schema and the editor
-protocol are Daniel-Ric's design, which is exactly why one dashboard can manage
-Endstone and PocketMine-MP servers together.
+StonePerms for PocketMine-MP is a port of **Daniel-Ric's** Endstone plugin, built
+on **imperazim's** EasyLibrary. The permission model, the storage schema and the
+editor protocol come from that plugin unchanged, which is why one dashboard
+manages both server implementations. Full attributions are in [CREDITS.md](CREDITS.md).
 
 **No affiliation with LuckPerms.** StonePerms is a separate project. It does not
 bundle, require, or derive from LuckPerms, and it is not endorsed by or
