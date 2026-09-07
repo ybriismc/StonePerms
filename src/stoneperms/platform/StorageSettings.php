@@ -16,6 +16,11 @@ use InvalidArgumentException;
 * nothing is synchronised — there is a single set of data that every server
 * reads and writes. What each server polls for is the revision, which is how
 * it learns that another server changed something.
+*
+* Groups, tracks and everything hanging off a group are shared. What a player
+* has is not, unless `share_players` says so: each server keeps its own, so a
+* player who is VIP on the lobby arrives at a minigame with whatever that
+* server gives them.
 */
 final class StorageSettings {
 
@@ -30,7 +35,8 @@ final class StorageSettings {
     public readonly string $username = 'stoneperms',
     public readonly string $password = '',
     public readonly string $charset = 'utf8mb4',
-    public readonly int $syncCheckTicks = 20
+    public readonly int $syncCheckTicks = 20,
+    public readonly bool $sharePlayers = false
   ) {}
 
   /** @param array<string, mixed> $storage */
@@ -56,7 +62,8 @@ final class StorageSettings {
       trim((string) ($mysql['username'] ?? 'stoneperms')),
       (string) ($mysql['password'] ?? ''),
       trim((string) ($mysql['charset'] ?? 'utf8mb4')) ?: 'utf8mb4',
-      self::boundedTicks($mysql['sync_check_ticks'] ?? null)
+      self::boundedTicks($mysql['sync_check_ticks'] ?? null),
+      (bool) ($mysql['share_players'] ?? false)
     );
 
     // A misspelled host is worth catching now rather than as a connection

@@ -28,6 +28,14 @@ storage:
     # How often to check whether another server changed something, in server
     # ticks. 20 ticks is one second.
     sync_check_ticks: 20
+    # Groups, tracks and their nodes are always shared. Players are not: each
+    # server keeps its own, so someone who is VIP on the lobby arrives at a
+    # minigame with whatever that server gives them. Each server is identified
+    # by its own contexts.server name, so give every server a different one.
+    #
+    # Set this to true for the opposite: one set of players for the network,
+    # where a rank given anywhere is a rank everywhere.
+    share_players: false
 
 permissions:
   # Group every player receives automatically.

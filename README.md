@@ -178,11 +178,41 @@ storage:
     username: stoneperms
     password: "..."
     sync_check_ticks: 20
+    share_players: false
 ```
 
 Every server pointed at that database reads and writes **the same rows**. Nothing is copied between
 servers and nothing is reconciled, because there are no copies to reconcile — the way several people
 in one document never have to merge anything.
+
+### What the network shares, and what a server keeps
+
+| | Shared by the network | The server's own |
+| --- | --- | --- |
+| Groups, their weights, their nodes | ✓ | |
+| Tracks | ✓ | |
+| Prefixes, suffixes and metadata on a group | ✓ | |
+| Players, and the groups and nodes given to a player | | ✓ |
+
+So a group made on the lobby exists on every server the moment it is made, and a permission added to
+it applies wherever that group is used. But **who has that group is each server's own business**: a
+player who is VIP on the lobby walks into a minigame as whatever that server gives them, normally
+the default group.
+
+Each server is identified by its `contexts.server` name, so give every server a different one — with
+two servers both called `global` there is nothing to tell their players apart. The plugin says so on
+startup if it finds that.
+
+`share_players: true` asks for the opposite: one set of players for the whole network, where a rank
+given anywhere is a rank everywhere.
+
+Two things are worth knowing about the split:
+
+- A player is known to a server once they have joined it, so `/stoneperms user Steve info` on a
+  server Steve has never visited says it does not know them. That is the same answer a separate
+  database would give.
+- Deleting a group deletes it for the network, and the assignments it left behind go with it on
+  every server, not only on the one that ran the command.
 
 What does travel between servers is a number. Each write bumps a revision inside its own
 transaction, and each server polls that row — once a second by default — to learn that someone else
@@ -217,7 +247,8 @@ grants nothing and denies nothing until the store answers again.
 ```
 
 Point `storage.driver` at `mysql`, restart, then run the migration: it reads this server's own
-SQLite file into the shared database. It is additive and never overwrites — a group or track the
+SQLite file into the shared database, where its groups and tracks become the network's and its
+players stay this server's. It is additive and never overwrites — a group or track the
 target already has is kept and reported, a differing weight is named rather than silently resolved,
 and running it twice ends where running it once did. The original file is left untouched, so it
 stays as a backup.

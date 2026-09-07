@@ -40,9 +40,16 @@ final class PdoPermissionRepository implements PermissionRepository {
   private ?PDO $pdo = null;
   private int $revision = 0;
   private readonly string $nocase;
+  private readonly ServerScope $scope;
 
-  public function __construct(private readonly SqlDialect $dialect) {
+  public function __construct(private readonly SqlDialect $dialect, ?ServerScope $scope = null) {
     $this->nocase = $dialect->caseInsensitive();
+    $this->scope = $scope ?? ServerScope::shared();
+  }
+
+  /** The server whose players these are, or '' when every server shares them. */
+  public function playerScope(): string {
+    return $this->scope->server;
   }
 
   public function revision(): int {
@@ -202,7 +209,7 @@ final class PdoPermissionRepository implements PermissionRepository {
     $xuid = $user->xuid !== null && trim($user->xuid) !== '' ? trim($user->xuid) : null;
     $this->run(
       $this->dialect->upsertUser(),
-      [$user->uniqueId, $xuid, $user->lastName, $timestamp, $timestamp]
+      [$user->uniqueId, $xuid, $user->lastName, $timestamp, $timestamp, ...$this->scope->params()]
     );
   }
 
@@ -210,10 +217,10 @@ final class PdoPermissionRepository implements PermissionRepository {
     $value = trim($identifier);
     $rows = $this->select(
       'SELECT unique_id, xuid, last_name FROM users
-       WHERE unique_id = ? OR xuid = ? OR last_name = ?' . $this->nocase . '
+       WHERE (unique_id = ? OR xuid = ? OR last_name = ?' . $this->nocase . ')' . $this->scope->userFilter() . '
        ORDER BY CASE WHEN unique_id = ? THEN 0 WHEN xuid = ? THEN 1 ELSE 2 END
        LIMIT 1',
-      [$value, $value, $value, $value, $value]
+      [$value, $value, $value, ...$this->scope->params(), $value, $value]
     );
     return $rows === [] ? null : self::rowToUser($rows[0]);
   }
@@ -221,7 +228,11 @@ final class PdoPermissionRepository implements PermissionRepository {
   public function listUsers(): array {
     return array_map(
       self::rowToUser(...),
-      $this->select('SELECT unique_id, xuid, last_name FROM users ORDER BY last_name' . $this->nocase)
+      $this->select(
+        'SELECT unique_id, xuid, last_name FROM users' . $this->scope->userWhere()
+        . ' ORDER BY last_name' . $this->nocase,
+        $this->scope->params()
+      )
     );
   }
 
@@ -268,10 +279,10 @@ final class PdoPermissionRepository implements PermissionRepository {
     $value = trim($identifier);
     $rows = $this->select(
       'SELECT ' . self::PROFILE_COLUMNS . ' FROM users
-       WHERE unique_id = ? OR xuid = ? OR last_name = ?' . $this->nocase . '
+       WHERE (unique_id = ? OR xuid = ? OR last_name = ?' . $this->nocase . ')' . $this->scope->userFilter() . '
        ORDER BY CASE WHEN unique_id = ? THEN 0 WHEN xuid = ? THEN 1 ELSE 2 END
        LIMIT 1',
-      [$value, $value, $value, $value, $value]
+      [$value, $value, $value, ...$this->scope->params(), $value, $value]
     );
     return $rows === [] ? null : self::rowToProfile($rows[0]);
   }
@@ -280,8 +291,9 @@ final class PdoPermissionRepository implements PermissionRepository {
     return array_map(
       self::rowToProfile(...),
       $this->select(
-        'SELECT ' . self::PROFILE_COLUMNS . ' FROM users
-         ORDER BY online DESC, last_seen_at DESC, last_name' . $this->nocase
+        'SELECT ' . self::PROFILE_COLUMNS . ' FROM users' . $this->scope->userWhere()
+        . ' ORDER BY online DESC, last_seen_at DESC, last_name' . $this->nocase,
+        $this->scope->params()
       )
     );
   }
@@ -344,6 +356,10 @@ final class PdoPermissionRepository implements PermissionRepository {
         $names = implode(', ', array_map(static fn(array $row): string => (string) $row['track_name'], $tracks));
         throw new InvalidArgumentException("Group '$group' is still used by track(s): $names");
       }
+      // A group belongs to the network, so deleting one takes its parent
+      // references with it on every server, not only on the one that ran the
+      // command. Leaving them behind would litter the other servers with
+      // assignments to a group that no longer exists.
       $removedNodes = $this->run(
         "DELETE FROM nodes WHERE (subject_type = 'group' AND subject_id = ?)
          OR (node_type = 'parent' AND node_key = ?)",
@@ -461,13 +477,13 @@ final class PdoPermissionRepository implements PermissionRepository {
     $timestamp = time();
     $contextsJson = $node->contexts->toJson();
     return $this->transaction(function () use ($node, $actor, $action, $timestamp, $contextsJson): Node {
-      [$query, $params] = self::replacementQuery($node, $contextsJson);
+      [$query, $params] = $this->replacementQuery($node, $contextsJson);
       $this->run($query, $params);
       $this->run(
         'INSERT INTO nodes(
            subject_type, subject_id, node_type, node_key, node_value,
-           contexts_json, expires_at, priority, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+           contexts_json, expires_at, priority, created_at' . $this->scope->column() . '
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?' . $this->scope->placeholder() . ')',
         [
           $node->subject->type->value,
           $node->subject->identifier,
@@ -477,7 +493,8 @@ final class PdoPermissionRepository implements PermissionRepository {
           $contextsJson,
           $node->expiresAt,
           $node->priority,
-          $timestamp
+          $timestamp,
+          ...$this->scope->ownerParams($node->subject)
         ]
       );
       $saved = new Node(
@@ -508,13 +525,14 @@ final class PdoPermissionRepository implements PermissionRepository {
     ?int $priority = null
   ): int {
     $query = 'DELETE FROM nodes WHERE subject_type = ? AND subject_id = ? '
-      . 'AND node_type = ? AND node_key = ? AND contexts_json = ?';
+      . 'AND node_type = ? AND node_key = ? AND contexts_json = ?' . $this->scope->nodeFilter();
     $params = [
       $subject->type->value,
       $subject->identifier,
       $type->value,
       $key,
-      $contexts->toJson()
+      $contexts->toJson(),
+      ...$this->scope->params()
     ];
     if ($temporary === true) {
       $query .= ' AND expires_at IS NOT NULL';
@@ -596,8 +614,9 @@ final class PdoPermissionRepository implements PermissionRepository {
           throw new InvalidArgumentException('The old parent node must be persisted');
         }
         $removed = $this->run(
-          "DELETE FROM nodes WHERE id = ? AND subject_type = ? AND subject_id = ? AND node_type = 'parent'",
-          [$oldNode->id, $subject->type->value, $subject->identifier]
+          "DELETE FROM nodes WHERE id = ? AND subject_type = ? AND subject_id = ? AND node_type = 'parent'"
+          . $this->scope->nodeFilter(),
+          [$oldNode->id, $subject->type->value, $subject->identifier, ...$this->scope->params()]
         );
         if ($removed !== 1) {
           throw new RuntimeException('The parent assignment changed concurrently');
@@ -607,20 +626,21 @@ final class PdoPermissionRepository implements PermissionRepository {
       $stored = null;
       if ($newNode !== null) {
         $contextsJson = $newNode->contexts->toJson();
-        [$query, $params] = self::replacementQuery($newNode, $contextsJson);
+        [$query, $params] = $this->replacementQuery($newNode, $contextsJson);
         $this->run($query, $params);
         $this->run(
           "INSERT INTO nodes(
              subject_type, subject_id, node_type, node_key, node_value,
-             contexts_json, expires_at, priority, created_at
-           ) VALUES (?, ?, 'parent', ?, 'true', ?, ?, 0, ?)",
+             contexts_json, expires_at, priority, created_at" . $this->scope->column() . "
+           ) VALUES (?, ?, 'parent', ?, 'true', ?, ?, 0, ?" . $this->scope->placeholder() . ")",
           [
             $subject->type->value,
             $subject->identifier,
             $newNode->key,
             $contextsJson,
             $newNode->expiresAt,
-            $timestamp
+            $timestamp,
+            ...$this->scope->ownerParams($subject)
           ]
         );
         $stored = new Node(
@@ -712,8 +732,9 @@ final class PdoPermissionRepository implements PermissionRepository {
             throw new RuntimeException('An editor session referenced an unpersisted node');
           }
           $deleted = $this->run(
-            'DELETE FROM nodes WHERE id = ? AND subject_type = ? AND subject_id = ?',
-            [$node->id, $change->subject->type->value, $change->subject->identifier]
+            'DELETE FROM nodes WHERE id = ? AND subject_type = ? AND subject_id = ?'
+            . $this->scope->nodeFilter(),
+            [$node->id, $change->subject->type->value, $change->subject->identifier, ...$this->scope->params()]
           );
           if ($deleted !== 1) {
             throw new RevisionConflictException(
@@ -772,8 +793,8 @@ final class PdoPermissionRepository implements PermissionRepository {
   }
 
   public function nodesFor(SubjectRef $subject, bool $includeExpired = true): array {
-    $sql = 'SELECT * FROM nodes WHERE subject_type = ? AND subject_id = ?';
-    $params = [$subject->type->value, $subject->identifier];
+    $sql = 'SELECT * FROM nodes WHERE subject_type = ? AND subject_id = ?' . $this->scope->nodeFilter();
+    $params = [$subject->type->value, $subject->identifier, ...$this->scope->params()];
     if (!$includeExpired) {
       $sql .= ' AND (expires_at IS NULL OR expires_at > ?)';
       $params[] = time();
@@ -792,8 +813,9 @@ final class PdoPermissionRepository implements PermissionRepository {
     }
     $nodes = [];
     $rows = $this->select(
-      "SELECT * FROM nodes WHERE subject_type = 'group' OR (subject_type = 'user' AND subject_id = ?) ORDER BY id",
-      [$user->identifier]
+      "SELECT * FROM nodes WHERE (subject_type = 'group' OR (subject_type = 'user' AND subject_id = ?))"
+      . $this->scope->nodeFilter() . ' ORDER BY id',
+      [$user->identifier, ...$this->scope->params()]
     );
     foreach ($rows as $row) {
       $node = self::rowToNode($row);
@@ -805,10 +827,14 @@ final class PdoPermissionRepository implements PermissionRepository {
   public function deleteExpired(int $timestamp): ExpiredNodes {
     $result = $this->transaction(function () use ($timestamp): array {
       $rows = $this->select(
-        'SELECT DISTINCT subject_type, subject_id FROM nodes WHERE expires_at IS NOT NULL AND expires_at <= ?',
-        [$timestamp]
+        'SELECT DISTINCT subject_type, subject_id FROM nodes
+         WHERE expires_at IS NOT NULL AND expires_at <= ?' . $this->scope->nodeFilter(),
+        [$timestamp, ...$this->scope->params()]
       );
-      $count = $this->run('DELETE FROM nodes WHERE expires_at IS NOT NULL AND expires_at <= ?', [$timestamp]);
+      $count = $this->run(
+        'DELETE FROM nodes WHERE expires_at IS NOT NULL AND expires_at <= ?' . $this->scope->nodeFilter(),
+        [$timestamp, ...$this->scope->params()]
+      );
       $subjects = [];
       foreach ($rows as $row) {
         $subjects[] = SubjectRef::of(SubjectType::from((string) $row['subject_type']), (string) $row['subject_id']);
@@ -861,15 +887,16 @@ final class PdoPermissionRepository implements PermissionRepository {
   *
   * @return array{0: string, 1: list<mixed>}
   */
-  private static function replacementQuery(Node $node, string $contextsJson): array {
+  private function replacementQuery(Node $node, string $contextsJson): array {
     $query = 'DELETE FROM nodes WHERE subject_type = ? AND subject_id = ? AND node_type = ? '
-      . 'AND node_key = ? AND contexts_json = ?';
+      . 'AND node_key = ? AND contexts_json = ?' . $this->scope->nodeFilter();
     $params = [
       $node->subject->type->value,
       $node->subject->identifier,
       $node->type->value,
       $node->key,
-      $contextsJson
+      $contextsJson,
+      ...$this->scope->params()
     ];
     $query .= $node->isTemporary() ? ' AND expires_at IS NOT NULL' : ' AND expires_at IS NULL';
     if ($node->type === NodeType::PREFIX || $node->type === NodeType::SUFFIX) {
@@ -883,8 +910,8 @@ final class PdoPermissionRepository implements PermissionRepository {
     $this->run(
       'INSERT INTO nodes(
          subject_type, subject_id, node_type, node_key, node_value,
-         contexts_json, expires_at, priority, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+         contexts_json, expires_at, priority, created_at' . $this->scope->column() . '
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?' . $this->scope->placeholder() . ')',
       [
         $node->subject->type->value,
         $node->subject->identifier,
@@ -894,7 +921,8 @@ final class PdoPermissionRepository implements PermissionRepository {
         $node->contexts->toJson(),
         $node->expiresAt,
         $node->priority,
-        $timestamp
+        $timestamp,
+        ...$this->scope->ownerParams($node->subject)
       ]
     );
   }
@@ -939,8 +967,9 @@ final class PdoPermissionRepository implements PermissionRepository {
     }
     ksort($details);
     $this->run(
-      'INSERT INTO audit_log(created_at, actor, action, subject_type, subject_id, details_json)
-       VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO audit_log(created_at, actor, action, subject_type, subject_id, details_json'
+      . $this->scope->column() . ')
+       VALUES (?, ?, ?, ?, ?, ?' . $this->scope->placeholder() . ')',
       [
         $timestamp,
         substr($actor, 0, 128),
@@ -952,7 +981,8 @@ final class PdoPermissionRepository implements PermissionRepository {
         json_encode(
           $details === [] ? new \stdClass() : $details,
           JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES
-        )
+        ),
+        ...$this->scope->auditParams()
       ]
     );
   }

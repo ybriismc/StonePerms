@@ -61,6 +61,15 @@ final class StorageSubCommand extends StonePermsSubCommand {
         : 'no, this server only')
     );
     $sender->sendMessage('  §7revision: §f' . $storage->revision());
+    if ($storage->isShared()) {
+      $scope = $storage->playerScope();
+      $sender->sendMessage(
+        '  §7players: §f' . ($scope === ''
+          ? 'shared with every server'
+          : "this server's own (" . $scope . ')')
+      );
+      $sender->sendMessage('  §8groups, tracks and their nodes are always shared');
+    }
     $sender->sendMessage('  §7groups: §f' . count($manager->listGroups())
       . ' §7tracks: §f' . count($manager->listTracks())
       . ' §7players: §f' . count($manager->listUsers()));

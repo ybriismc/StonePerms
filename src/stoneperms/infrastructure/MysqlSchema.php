@@ -18,11 +18,14 @@ namespace stoneperms\infrastructure;
 */
 final class MysqlSchema {
 
-  public const VERSION = 1;
+  public const VERSION = 2;
 
   /** @return array<int, list<string>> */
   public static function migrations(): array {
-    return [1 => self::migration1()];
+    return [
+      1 => self::migration1(),
+      2 => self::migration2()
+    ];
   }
 
   /** @return list<string> */
@@ -135,6 +138,32 @@ final class MysqlSchema {
       ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci
       SQL,
       'INSERT IGNORE INTO shared_state(id, revision) VALUES (1, 0)'
+    ];
+  }
+
+  /**
+  * Says who owns a row.
+  *
+  * A group and everything hanging off it belongs to the network and carries no
+  * owner. A player, and every node attached to a player, belongs to the server
+  * that saw them, so two servers can know the same person differently — VIP on
+  * the lobby, default on a minigame — out of one database.
+  *
+  * An empty owner is what a network that wants its players shared writes
+  * everywhere, which is also what these columns default to, so a store built
+  * before this migration keeps behaving exactly as it did.
+  *
+  * @return list<string>
+  */
+  private static function migration2(): array {
+    return [
+      "ALTER TABLE users ADD COLUMN server VARCHAR(64) NOT NULL DEFAULT ''",
+      'ALTER TABLE users DROP PRIMARY KEY, ADD PRIMARY KEY (unique_id, server)',
+      'ALTER TABLE users DROP INDEX users_xuid_unique, ADD UNIQUE KEY users_xuid_unique (xuid, server)',
+      'ALTER TABLE users ADD KEY users_server_lookup (server, last_name)',
+      "ALTER TABLE nodes ADD COLUMN server VARCHAR(64) NOT NULL DEFAULT ''",
+      'ALTER TABLE nodes ADD KEY nodes_server_lookup (server, subject_type, subject_id)',
+      "ALTER TABLE audit_log ADD COLUMN server VARCHAR(64) NOT NULL DEFAULT ''"
     ];
   }
 }

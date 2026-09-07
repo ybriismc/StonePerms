@@ -13,6 +13,7 @@ use stoneperms\command\CommandEnums;
 use stoneperms\command\StonePermsCommand;
 use stoneperms\infrastructure\MysqlDialect;
 use stoneperms\infrastructure\PdoPermissionRepository;
+use stoneperms\infrastructure\ServerScope;
 use stoneperms\infrastructure\SqlDialect;
 use stoneperms\infrastructure\SqliteDialect;
 use stoneperms\platform\AttachmentManager;
@@ -86,7 +87,8 @@ final class StonePermsPlugin extends PluginToolkit {
     }
 
     try {
-      $this->repository = new PdoPermissionRepository($this->createDialect());
+      $scope = $this->createServerScope();
+      $this->repository = new PdoPermissionRepository($this->createDialect($scope), $scope);
       $this->repository->initialize($this->settings->defaultGroup);
     } catch (Throwable $throwable) {
       $this->getLogger()->critical('StonePerms could not open its database: ' . $throwable->getMessage());
@@ -281,7 +283,7 @@ final class StonePermsPlugin extends PluginToolkit {
   * The store this server was configured for. Everything above it is the same
   * either way; only where the rows live changes.
   */
-  private function createDialect(): SqlDialect {
+  private function createDialect(ServerScope $scope): SqlDialect {
     $storage = $this->settings->storage;
     if (!$storage->isShared()) {
       return new SqliteDialect($this->getDataFolder() . $this->settings->databaseFile);
@@ -292,8 +294,31 @@ final class StonePermsPlugin extends PluginToolkit {
       $storage->database,
       $storage->username,
       $storage->password,
-      $storage->charset
+      $storage->charset,
+      $scope
     );
+  }
+
+  /**
+  * Who owns the player rows in a shared database.
+  *
+  * A file is one server's already, and a network that asked for its players to
+  * be shared wants no division either. Otherwise the server's own context name
+  * is the owner, which is the same name that scopes a node with `server=`.
+  */
+  private function createServerScope(): ServerScope {
+    $storage = $this->settings->storage;
+    if (!$storage->isShared() || $storage->sharePlayers) {
+      return ServerScope::shared();
+    }
+    if ($this->settings->serverContext === 'global') {
+      $this->getLogger()->warning(
+        'StonePerms is on a shared database with contexts.server still set to "global", so every '
+        . 'server using that name keeps its players in the same place. Give this server its own '
+        . 'name in contexts.server, or set storage.mysql.share_players to true on purpose.'
+      );
+    }
+    return ServerScope::of($this->settings->serverContext);
   }
 
   /**

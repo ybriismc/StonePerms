@@ -14,6 +14,13 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   bumps a revision inside its own transaction and each server polls that row,
   which is how it learns that another server changed something and its cached
   snapshots are stale; the players online then have the new answer applied.
+- **Players belong to their server.** On a shared database the groups, tracks
+  and everything hanging off a group are the network's — one definition, seen
+  everywhere — while the players and what each player has been given belong to
+  the server that saw them. Somebody who is VIP on the lobby arrives at a
+  minigame as whatever that server gives them, usually the default group. Each
+  server is identified by its own `contexts.server` name, and
+  `storage.mysql.share_players: true` asks for one set of players instead.
 - **`/stoneperms storage`.** `status` says where the data lives and whether
   other servers can write there. `migrate` reads this server's SQLite file into
   the shared database — writing nothing until `--apply`, keeping anything the

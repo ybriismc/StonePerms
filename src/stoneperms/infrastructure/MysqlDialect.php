@@ -26,6 +26,7 @@ final class MysqlDialect implements SqlDialect {
   private const LOST_CONNECTION_CODES = [2002, 2003, 2006, 2013, 1053, 1927, 4031];
 
   private ?object $connection = null;
+  private readonly ServerScope $scope;
 
   public function __construct(
     private readonly string $host,
@@ -33,11 +34,15 @@ final class MysqlDialect implements SqlDialect {
     private readonly string $database,
     private readonly string $username,
     private readonly string $password,
-    private readonly string $charset = 'utf8mb4'
+    private readonly string $charset = 'utf8mb4',
+    ?ServerScope $scope = null
   ) {
     if (trim($this->host) === '' || trim($this->database) === '') {
       throw new RuntimeException('storage.mysql needs at least a host and a database name');
     }
+    // Without a scope the store behaves as it did before players could belong
+    // to a server: every row carries no owner and every server sees them all.
+    $this->scope = $scope ?? ServerScope::shared();
   }
 
   public function name(): string {
@@ -141,8 +146,8 @@ final class MysqlDialect implements SqlDialect {
   }
 
   public function upsertUser(): string {
-    return 'INSERT INTO users(unique_id, xuid, last_name, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+    return 'INSERT INTO users(unique_id, xuid, last_name, created_at, updated_at' . $this->scope->column() . ')
+            VALUES (?, ?, ?, ?, ?' . $this->scope->placeholder() . ')
             ON DUPLICATE KEY UPDATE
               xuid = VALUES(xuid),
               last_name = VALUES(last_name),
@@ -161,8 +166,9 @@ final class MysqlDialect implements SqlDialect {
               locale, device_os, game_version, game_mode, ping_ms, total_exp, exp_level,
               skin_id, skin_hash, skin_width, skin_height, skin_rgba, cape_id,
               first_seen_at, last_seen_at, last_joined_at, last_quit_at,
-              skin_updated_at, online
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              skin_updated_at, online' . $this->scope->column() . '
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?'
+            . $this->scope->placeholder() . ')
             ON DUPLICATE KEY UPDATE
               skin_updated_at = CASE
                 WHEN VALUES(skin_hash) IS NOT NULL

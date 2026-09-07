@@ -67,6 +67,7 @@ use stoneperms\domain\TrackRecord;
 use stoneperms\domain\UserRecord;
 use stoneperms\infrastructure\MysqlDialect;
 use stoneperms\infrastructure\PdoPermissionRepository;
+use stoneperms\infrastructure\ServerScope;
 use stoneperms\infrastructure\SqlDialect;
 use stoneperms\infrastructure\SqliteDialect;
 
@@ -374,6 +375,92 @@ $source->close();
 $check('running it twice changes nothing', count($target->nodesFor(SubjectRef::group('ceo'))), 1);
 $target->close();
 @unlink($file);
+
+// 4 -------------------------------------------------------------------------
+echo "\nPlayers belong to their server, definitions belong to the network\n";
+fresh($dialect()->open());
+$scoped = static fn(string $server): PdoPermissionRepository => new PdoPermissionRepository(
+  new MysqlDialect($host, $port, $database, $username, $password, 'utf8mb4', ServerScope::of($server)),
+  ServerScope::of($server)
+);
+
+$lobby = $scoped('lobby1');
+$lobby->initialize('default');
+$minigame = $scoped('minigame1');
+$minigame->initialize('default');
+$lobbyManager = new StonePermsManager($lobby, 'default');
+$minigameManager = new StonePermsManager($minigame, 'default');
+
+// the lobby knows this player as VIP
+$lobby->createGroup(new GroupRecord('vip', 'VIP', 50), 'lobby1');
+$lobby->upsertUser(new UserRecord(UUID, 'yBriisMC'));
+$lobby->saveNode(new Node(SubjectRef::user(UUID), NodeType::PARENT, 'vip', 'true'), 'lobby1', 'user.parent.add');
+$lobby->saveNode(
+  new Node(SubjectRef::group('vip'), NodeType::PERMISSION, 'fly.use', 'true'),
+  'lobby1',
+  'group.permission.set'
+);
+$minigame->refreshSharedRevision();
+
+$check('the group reaches the other server', $minigame->getGroup('vip')?->weight, 50);
+$check('the player does not', $minigame->findUser('yBriisMC') === null ? 'unknown' : 'known', 'unknown');
+$check('the lobby has them', $lobby->findUser('yBriisMC')?->lastName, 'yBriisMC');
+$check(
+  'VIP on the lobby',
+  implode(',', $resolver->effectiveGroups($lobbyManager->snapshot(SubjectRef::user(UUID)), null, $now)),
+  'vip,default'
+);
+$check(
+  'default on the minigame',
+  implode(',', $resolver->effectiveGroups($minigameManager->snapshot(SubjectRef::user(UUID)), null, $now)),
+  'default'
+);
+$check(
+  'and so the permission does not follow them',
+  var_export($resolver->resolve($minigameManager->snapshot(SubjectRef::user(UUID)), 'fly.use', null, $now)->value, true),
+  'NULL'
+);
+
+// the minigame sees them join and gives them something of its own
+$minigame->upsertUser(new UserRecord(UUID, 'yBriisMC'));
+$minigame->createGroup(new GroupRecord('duelist', 'Duelist', 20), 'minigame1');
+$minigame->saveNode(new Node(SubjectRef::user(UUID), NodeType::PARENT, 'duelist', 'true'), 'minigame1', 'user.parent.add');
+$lobby->refreshSharedRevision();
+$check(
+  'the minigame assignment stays there',
+  implode(',', $resolver->effectiveGroups($minigameManager->snapshot(SubjectRef::user(UUID)), null, $now)),
+  'duelist,default'
+);
+$check(
+  'the lobby is untouched by it',
+  implode(',', $resolver->effectiveGroups($lobbyManager->snapshot(SubjectRef::user(UUID)), null, $now)),
+  'vip,default'
+);
+$check('each server sees one assignment', count($lobby->nodesFor(SubjectRef::user(UUID))), 1);
+$check('and the group it made is on both', $lobby->getGroup('duelist')?->weight, 20);
+$check('one player row per server', count($lobby->listUsers()) . '+' . count($minigame->listUsers()), '1+1');
+
+// deleting a shared group has to clear the assignments it left everywhere
+$minigame->deleteGroup('vip', 'minigame1');
+$lobby->refreshSharedRevision();
+$check(
+  'deleting the group clears it on the other server too',
+  implode(',', $resolver->effectiveGroups($lobbyManager->snapshot(SubjectRef::user(UUID)), null, $now)),
+  'default'
+);
+$lobby->close();
+$minigame->close();
+
+// asking for one set of players gives the opposite behaviour
+fresh($dialect()->open());
+$shared1 = new PdoPermissionRepository($dialect());
+$shared1->initialize('default');
+$shared2 = new PdoPermissionRepository($dialect());
+$shared2->initialize('default');
+$shared1->upsertUser(new UserRecord(UUID, 'yBriisMC'));
+$check('share_players puts them on both', $shared2->findUser('yBriisMC')?->lastName, 'yBriisMC');
+$shared1->close();
+$shared2->close();
 
 // ---------------------------------------------------------------------------
 fresh($dialect()->open());
