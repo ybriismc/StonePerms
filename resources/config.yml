@@ -1,0 +1,50 @@
+# StonePerms for PocketMine-MP.
+#
+# The plugin works with no changes to this file. Everything below is optional.
+
+debug: false
+
+storage:
+  # SQLite database stored in this plugin's data folder.
+  database: stoneperms.db
+
+permissions:
+  # Group every player receives automatically.
+  default_group: default
+
+contexts:
+  server: global
+  include_device_os: false
+  include_locale: false
+
+maintenance:
+  # How often expired permissions are checked, in server ticks.
+  expiry_check_ticks: 20
+  # How often the PocketMine permission list is refreshed, in server ticks.
+  catalog_check_ticks: 100
+
+startup:
+  # Show the full StonePerms status block after the plugin has loaded.
+  show_summary: true
+  # Warn when server settings limit player identity or conflict with chat formatting.
+  check_server_properties: true
+
+web:
+  # Enables the connection from this server to the web API.
+  # "/stoneperms web pair <code>" turns this on for you.
+  enabled: false
+  # Official service. Replace this address only when using a self-hosted StonePerms API.
+  api_url: "https://stoneperms.spindexgfx.com"
+  server_id: ""
+  server_token: ""
+  server_name: "PocketMine-MP server"
+
+display:
+  chat:
+    # Turn this off if another plugin already formats chat.
+    enabled: false
+    format: "{prefix}§f{name}{suffix} §8» §f{message}"
+  nametag:
+    # Text displayed above each online player.
+    enabled: false
+    format: "{prefix}§f{name}{suffix}"

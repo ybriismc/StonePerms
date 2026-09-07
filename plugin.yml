@@ -1,0 +1,17 @@
+name: StonePerms
+main: stoneperms\StonePermsPlugin
+version: 1.0.0
+api: 5.0.0
+
+authors:
+  - yBriisMC
+
+description: Permissions, groups, tracks, chat formatting, and a web editor for PocketMine-MP servers.
+
+depend:
+  - EasyLibrary
+
+permissions:
+  stoneperms.command.admin:
+    default: op
+    description: Allows full StonePerms administration through commands and forms
