@@ -31,6 +31,8 @@ final class InfoSubCommand extends StonePermsSubCommand {
     $sender->sendMessage('  §7groups: §f' . count($manager->listGroups()));
     $sender->sendMessage('  §7tracks: §f' . count($manager->listTracks()));
     $sender->sendMessage('  §7players known: §f' . count($manager->listUsers()));
+    $sender->sendMessage('  §7storage: §f' . $plugin->storage()->describe()
+      . ($plugin->storage()->isShared() ? ' §7(shared with other servers)' : ''));
     $sender->sendMessage('  §7revision: §f' . $manager->repository()->revision());
     $sender->sendMessage('  §7permission catalog: §f' . count($plugin->attachments()->permissionCatalog()));
     $sender->sendMessage('  §7placeholders: §f' . ($plugin->placeholders()->isRegistered() ? 'registered' : 'unavailable'));

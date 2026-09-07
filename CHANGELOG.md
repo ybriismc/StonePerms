@@ -4,6 +4,46 @@ All notable changes to StonePerms for PocketMine-MP are recorded here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **MySQL storage.** `storage.driver: mysql` points several servers at one
+  database. There is a single set of rows that every server reads and writes,
+  so nothing is copied between servers and nothing is reconciled. Each write
+  bumps a revision inside its own transaction and each server polls that row,
+  which is how it learns that another server changed something and its cached
+  snapshots are stale; the players online then have the new answer applied.
+- **`/stoneperms storage`.** `status` says where the data lives and whether
+  other servers can write there. `migrate` reads this server's SQLite file into
+  the shared database — writing nothing until `--apply`, keeping anything the
+  target already has, and safe to run twice. `--scope-to-server` tags every
+  copied node with that server's `server` context so behaviour does not change
+  the moment the data is merged.
+- The startup report and `/stoneperms info` say which store is in use.
+
+### Changed
+
+- The store is one implementation over PDO with the engine's differences behind
+  a dialect, rather than a class named for SQLite. SQLite keeps its file, its
+  schema and its behaviour exactly: a `stoneperms.db` written by this build
+  still opens in the Endstone one.
+- An editor batch checks the revision it was built against with that row locked
+  inside its transaction, so two dashboards on two servers can no longer both
+  pass the check and both write.
+- A statement whose connection died is retried once on a fresh connection, which
+  is what a database left idle overnight does to it.
+
+### Notes
+
+- `storage.driver` defaults to `sqlite` and nothing about an existing server
+  changes. The MySQL driver needs the `pdo_mysql` PHP extension.
+- While the database is unreachable, permissions already resolved keep being
+  served and writes fail rather than being queued: a queued write would have to
+  be reconciled later against what other servers did meanwhile, which is how
+  data goes missing quietly. A player who joins during an outage gets no
+  attachment rather than a wrong one.
+
 ## [1.0.0] - 2026-09-07
 
 First stable release of the PocketMine-MP build. It is a port of the Endstone

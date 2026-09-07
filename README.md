@@ -34,7 +34,8 @@ that already exists — there is nothing extra to host.
 ## Features
 
 - **Permissions** — users, groups, recursive inheritance, positive and negative nodes, temporary
-  assignments, weighted conflict resolution and a SQLite audit history.
+  assignments, weighted conflict resolution and an audit history.
+- **Storage** — a SQLite file per server, or one MySQL database shared by a whole network.
 - **Contexts** — `server`, `world`, `dimension` and `gamemode`, plus contexts registered by other
   plugins.
 - **Display** — inherited metadata, weighted prefixes and suffixes, placeholders, and optional chat
@@ -46,7 +47,7 @@ that already exists — there is nothing extra to host.
 ## Requirements
 
 - PocketMine-MP API 5.0.0 or newer
-- PHP 8.2 or newer
+- PHP 8.2 or newer, with `pdo_sqlite` — and `pdo_mysql` when `storage.driver` is `mysql`
 - **EasyLibrary 2.0.0** — required
 
 | EasyLibrary | |
@@ -144,6 +145,9 @@ The root command is `/stoneperms`; aliases are `/sp` and `/perms`. Everything is
 /stoneperms user <name|uuid|xuid> promote <track> [--dont-add-to-first] [key=value ...]
 /stoneperms user <name|uuid|xuid> demote <track> [--dont-remove-from-first] [key=value ...]
 /stoneperms user <name|uuid|xuid> showtracks [key=value ...]
+
+/stoneperms storage status
+/stoneperms storage migrate [--apply] [--scope-to-server]
 ```
 
 Durations combine: `30m`, `2h30m`, `7d`, `1mo2d`. Trailing `key=value` tokens scope a change to a
@@ -151,6 +155,77 @@ context. Quote values containing spaces, for example
 `/stoneperms group prefix vip set 100 "[VIP] "`.
 
 </details>
+
+## Storage
+
+Permission data lives in one of two places, chosen by `storage.driver`.
+
+### `sqlite` — the default
+
+One file in the plugin's data folder, used by this server alone. Nothing to install and nothing to
+configure; a server that is never edited keeps working exactly as it always did. The schema is the
+one the Endstone build writes, so a `stoneperms.db` from either plugin opens in the other.
+
+### `mysql` — one database, many servers
+
+```yaml
+storage:
+  driver: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    database: stoneperms
+    username: stoneperms
+    password: "..."
+    sync_check_ticks: 20
+```
+
+Every server pointed at that database reads and writes **the same rows**. Nothing is copied between
+servers and nothing is reconciled, because there are no copies to reconcile — the way several people
+in one document never have to merge anything.
+
+What does travel between servers is a number. Each write bumps a revision inside its own
+transaction, and each server polls that row — once a second by default — to learn that someone else
+changed something. When it moves, snapshots cached here were built before that change, so they are
+dropped and the players who are online have the new answer applied. Nothing about this is manual.
+
+Two things follow from sharing one set of data, and both are the point:
+
+- A group made anywhere exists everywhere, so a network has one set of groups rather than one per
+  server.
+- A node with no context now applies on **every** server. Use the `server` context to scope what
+  should differ — see [Contexts](#contexts).
+
+### When the database is unreachable
+
+Permissions already resolved keep working: the last snapshot that loaded is served rather than an
+empty one, so nobody loses a rank because the network blinked. A statement whose connection had died
+is retried once on a fresh connection, which is what happens to a database left idle overnight.
+
+Writes fail, loudly, and are not queued. A write accepted while the store is unreachable would have
+to be reconciled later against whatever the other servers did meanwhile, and that is exactly how
+data gets lost quietly; failing in front of the admin who typed the command is the honest version.
+A player who joins during an outage gets no attachment at all rather than a wrong one — StonePerms
+grants nothing and denies nothing until the store answers again.
+
+### Moving an existing server onto MySQL
+
+```text
+/stoneperms storage status                             where the data lives now
+/stoneperms storage migrate                            what it would copy, writing nothing
+/stoneperms storage migrate --apply --scope-to-server   do it, keeping today's behaviour
+```
+
+Point `storage.driver` at `mysql`, restart, then run the migration: it reads this server's own
+SQLite file into the shared database. It is additive and never overwrites — a group or track the
+target already has is kept and reported, a differing weight is named rather than silently resolved,
+and running it twice ends where running it once did. The original file is left untouched, so it
+stays as a backup.
+
+`--scope-to-server` matters more than it looks. A node in a server's own file applied only to that
+server by accident of where it lived; in a shared database it would apply everywhere. The flag tags
+every copied node with that server's own `server` context, so each server behaves exactly as it did
+before the move. Take the scopes off later, one at a time, for the things that should be global.
 
 ## Contexts
 
@@ -233,9 +308,8 @@ Nothing in the plugin treats the word `global` specially — it is just the defa
 `contexts.server`. `server=global` therefore matches only while that setting still says `global`;
 change it and every node scoped that way silently stops applying.
 
-To mean *everywhere*, give the node **no context at all**. Scope with `server=` only when one set of
-data serves more than one server — several servers on the same dashboard, or the same database
-reused — where each server names itself:
+To mean *everywhere*, give the node **no context at all**. Scope with `server=` when one set of data
+serves more than one server — see [Storage](#storage) — where each server names itself:
 
 ```yaml
 contexts:
@@ -243,7 +317,9 @@ contexts:
 ```
 
 On a single server with its own database, `world`, `dimension` and `gamemode` are the useful keys and
-`server` is best left alone.
+`server` is best left alone. On a shared one it is the key that keeps servers apart, and world names
+are worth watching: `world=lobby` matches on every server that has a world folder by that name, so
+pair it with `server=` where the names are not unique across the network.
 
 ### Contexts from other plugins
 
