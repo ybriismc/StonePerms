@@ -12,6 +12,7 @@ use stoneperms\command\subcommand\GroupSubCommand;
 use stoneperms\command\subcommand\HelpSubCommand;
 use stoneperms\command\subcommand\InfoSubCommand;
 use stoneperms\command\subcommand\LogSubCommand;
+use stoneperms\command\subcommand\StorageSubCommand;
 use stoneperms\command\subcommand\TrackSubCommand;
 use stoneperms\command\subcommand\UserSubCommand;
 use stoneperms\command\subcommand\WebSubCommand;
@@ -49,6 +50,7 @@ final class StonePermsCommand extends Command {
         new UserSubCommand($this->stonePerms, $this),
         new GroupSubCommand($this->stonePerms, $this),
         new TrackSubCommand($this->stonePerms, $this),
+        new StorageSubCommand($this->stonePerms, $this),
         new WebSubCommand($this->stonePerms, $this)
       ]
     ];
