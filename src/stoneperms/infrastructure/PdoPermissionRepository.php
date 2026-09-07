@@ -4,8 +4,6 @@ declare(strict_types = 1);
 
 namespace stoneperms\infrastructure;
 
-use imperazim\db\DBManager;
-use imperazim\db\Sqlite3;
 use InvalidArgumentException;
 use PDO;
 use RuntimeException;
@@ -28,75 +26,100 @@ use stoneperms\domain\UserRecord;
 use stoneperms\domain\Validation;
 
 /**
-* The permission store, on SQLite, through LibDB.
+* The permission store, over PDO, on whichever engine the dialect describes.
 *
-* The connection is opened by `imperazim\db\DBManager` so the plugin uses the
-* same driver as the rest of the EasyLibrary stack, and the raw PDO handle is
-* used where LibDB's CRUD helpers cannot express a statement (upserts, ordered
-* deletes, last insert id).
+* One implementation serves both engines because they differ in very little:
+* four statements, whether a comparison has to be told to ignore case, and
+* what a revision is. Everything else — how a node is encoded, how a snapshot
+* is assembled, how an editor batch is applied — is the same on either.
 */
-final class SqlitePermissionRepository implements PermissionRepository {
+final class PdoPermissionRepository implements PermissionRepository {
 
-  private ?Sqlite3 $database = null;
+  private const PROFILE_COLUMNS = SqliteSchema::PROFILE_COLUMNS;
+
   private ?PDO $pdo = null;
   private int $revision = 0;
+  private readonly string $nocase;
 
-  public function __construct(private readonly string $path) {}
+  public function __construct(private readonly SqlDialect $dialect) {
+    $this->nocase = $dialect->caseInsensitive();
+  }
 
   public function revision(): int {
     return $this->revision;
   }
 
+  /** Which engine this store runs on, for the startup report and `storage`. */
+  public function describe(): string {
+    return $this->dialect->describe();
+  }
+
+  public function driver(): string {
+    return $this->dialect->name();
+  }
+
+  /** Whether other servers can be writing to the same data. */
+  public function isShared(): bool {
+    return $this->dialect->isShared();
+  }
+
+  /**
+  * Reads the revision another server may have moved on. Returns true when it
+  * changed, which is the caller's cue that every cached snapshot is stale.
+  *
+  * A failure here is not fatal: the connection is being watched by the next
+  * poll anyway, and reporting "nothing changed" leaves the server serving what
+  * it already has rather than throwing on a tick.
+  */
+  public function refreshSharedRevision(): bool {
+    if (!$this->dialect->isShared() || $this->pdo === null) {
+      return false;
+    }
+    try {
+      $revision = $this->attempt(fn(): int => $this->dialect->readRevision($this->requirePdo(), $this->revision));
+    } catch (\Throwable) {
+      return false;
+    }
+    if ($revision === $this->revision) {
+      return false;
+    }
+    $this->revision = $revision;
+    return true;
+  }
+
   public function initialize(string $defaultGroup): void {
     $groupName = Validation::groupName($defaultGroup);
-    $directory = dirname($this->path);
-    if (!is_dir($directory)) {
-      mkdir($directory, 0777, true);
-    }
-
-    $connection = DBManager::connect('sqlite', ['database' => $this->path]);
-    if (!$connection instanceof Sqlite3) {
-      throw new RuntimeException('StonePerms requires the SQLite driver');
-    }
-    $this->database = $connection;
-    $this->pdo = $connection->getPdo();
-
-    $this->pdo->exec('PRAGMA foreign_keys = ON');
-    $this->pdo->exec('PRAGMA journal_mode = WAL');
-    $this->pdo->exec('PRAGMA synchronous = NORMAL');
-    $this->pdo->exec('PRAGMA busy_timeout = 10000');
-
+    $this->pdo = $this->dialect->open();
     $this->migrate();
+    $this->revision = $this->dialect->readRevision($this->requirePdo(), 0);
 
     $timestamp = time();
-    $this->pdo->prepare(
-      'INSERT INTO permission_groups(name, display_name, weight, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?) ON CONFLICT(name) DO NOTHING'
-    )->execute([$groupName, $groupName, $timestamp, $timestamp]);
+    $this->run($this->dialect->insertGroupIfMissing(), [$groupName, $groupName, 0, $timestamp, $timestamp]);
   }
 
   private function migrate(): void {
     $pdo = $this->requirePdo();
     $pdo->exec(
-      'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)'
+      'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at BIGINT NOT NULL)'
     );
     $applied = [];
     foreach ($pdo->query('SELECT version FROM schema_migrations')->fetchAll() as $row) {
       $applied[(int) $row['version']] = true;
     }
-    foreach (SqliteSchema::migrations() as $version => $sql) {
+    foreach ($this->dialect->migrations() as $version => $statements) {
       if (isset($applied[$version])) {
         continue;
       }
-      $pdo->exec($sql);
-      $statement = $pdo->prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)');
-      $statement->execute([$version, time()]);
+      foreach ($statements as $statement) {
+        $pdo->exec($statement);
+      }
+      $record = $pdo->prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)');
+      $record->execute([$version, time()]);
     }
   }
 
   public function close(): void {
-    $this->database?->close();
-    $this->database = null;
+    $this->dialect->close();
     $this->pdo = null;
   }
 
@@ -112,16 +135,51 @@ final class SqlitePermissionRepository implements PermissionRepository {
   * @return list<array<string, mixed>>
   */
   private function select(string $sql, array $params = []): array {
-    $statement = $this->requirePdo()->prepare($sql);
-    $statement->execute($params);
-    return $statement->fetchAll();
+    return $this->attempt(function () use ($sql, $params): array {
+      $statement = $this->requirePdo()->prepare($sql);
+      $statement->execute($params);
+      return $statement->fetchAll();
+    });
   }
 
   /** @param list<mixed> $params */
   private function run(string $sql, array $params = []): int {
-    $statement = $this->requirePdo()->prepare($sql);
-    $statement->execute($params);
-    return $statement->rowCount();
+    return $this->attempt(function () use ($sql, $params): int {
+      $statement = $this->requirePdo()->prepare($sql);
+      $statement->execute($params);
+      return $statement->rowCount();
+    });
+  }
+
+  /**
+  * Runs a statement, and runs it once more on a fresh connection if the first
+  * attempt failed because the connection had died. A database left idle
+  * overnight closes the connection its side, which is the ordinary case here.
+  *
+  * Only a statement outside a transaction is retried: reconnecting mid
+  * transaction would silently drop everything written before it.
+  */
+  private function attempt(callable $operation): mixed {
+    try {
+      return $operation();
+    } catch (\Throwable $error) {
+      $pdo = $this->pdo;
+      if ($pdo === null || $pdo->inTransaction() || !$this->dialect->isLostConnection($error)) {
+        throw $error;
+      }
+      $this->pdo = null;
+      $this->dialect->close();
+      $this->pdo = $this->dialect->open();
+      return $operation();
+    }
+  }
+
+  /**
+  * Records that data changed, inside the transaction that changed it, so the
+  * revision and the change become visible together.
+  */
+  private function bumpRevision(): void {
+    $this->revision = $this->dialect->bumpRevision($this->requirePdo(), $this->revision);
   }
 
   private function transaction(callable $callback): mixed {
@@ -143,12 +201,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
     $timestamp = time();
     $xuid = $user->xuid !== null && trim($user->xuid) !== '' ? trim($user->xuid) : null;
     $this->run(
-      'INSERT INTO users(unique_id, xuid, last_name, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(unique_id) DO UPDATE SET
-         xuid = excluded.xuid,
-         last_name = excluded.last_name,
-         updated_at = excluded.updated_at',
+      $this->dialect->upsertUser(),
       [$user->uniqueId, $xuid, $user->lastName, $timestamp, $timestamp]
     );
   }
@@ -157,7 +210,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
     $value = trim($identifier);
     $rows = $this->select(
       'SELECT unique_id, xuid, last_name FROM users
-       WHERE unique_id = ? OR xuid = ? OR last_name = ? COLLATE NOCASE
+       WHERE unique_id = ? OR xuid = ? OR last_name = ?' . $this->nocase . '
        ORDER BY CASE WHEN unique_id = ? THEN 0 WHEN xuid = ? THEN 1 ELSE 2 END
        LIMIT 1',
       [$value, $value, $value, $value, $value]
@@ -168,48 +221,14 @@ final class SqlitePermissionRepository implements PermissionRepository {
   public function listUsers(): array {
     return array_map(
       self::rowToUser(...),
-      $this->select('SELECT unique_id, xuid, last_name FROM users ORDER BY last_name COLLATE NOCASE')
+      $this->select('SELECT unique_id, xuid, last_name FROM users ORDER BY last_name' . $this->nocase)
     );
   }
 
   public function upsertPlayerProfile(PlayerProfile $profile): PlayerProfile {
     $xuid = $profile->xuid !== null && trim($profile->xuid) !== '' ? trim($profile->xuid) : null;
     $this->run(
-      'INSERT INTO users(
-         unique_id, xuid, last_name, created_at, updated_at,
-         locale, device_os, game_version, game_mode, ping_ms, total_exp, exp_level,
-         skin_id, skin_hash, skin_width, skin_height, skin_rgba, cape_id,
-         first_seen_at, last_seen_at, last_joined_at, last_quit_at,
-         skin_updated_at, online
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(unique_id) DO UPDATE SET
-         xuid = COALESCE(excluded.xuid, users.xuid),
-         last_name = excluded.last_name,
-         updated_at = excluded.updated_at,
-         locale = COALESCE(excluded.locale, users.locale),
-         device_os = COALESCE(excluded.device_os, users.device_os),
-         game_version = COALESCE(excluded.game_version, users.game_version),
-         game_mode = COALESCE(excluded.game_mode, users.game_mode),
-         ping_ms = COALESCE(excluded.ping_ms, users.ping_ms),
-         total_exp = COALESCE(excluded.total_exp, users.total_exp),
-         exp_level = COALESCE(excluded.exp_level, users.exp_level),
-         skin_id = CASE WHEN excluded.skin_hash IS NOT NULL THEN excluded.skin_id ELSE users.skin_id END,
-         skin_hash = COALESCE(excluded.skin_hash, users.skin_hash),
-         skin_width = CASE WHEN excluded.skin_hash IS NOT NULL THEN excluded.skin_width ELSE users.skin_width END,
-         skin_height = CASE WHEN excluded.skin_hash IS NOT NULL THEN excluded.skin_height ELSE users.skin_height END,
-         skin_rgba = CASE WHEN excluded.skin_hash IS NOT NULL THEN excluded.skin_rgba ELSE users.skin_rgba END,
-         cape_id = CASE WHEN excluded.skin_hash IS NOT NULL THEN excluded.cape_id ELSE users.cape_id END,
-         first_seen_at = COALESCE(users.first_seen_at, excluded.first_seen_at),
-         last_seen_at = excluded.last_seen_at,
-         last_joined_at = COALESCE(excluded.last_joined_at, users.last_joined_at),
-         last_quit_at = COALESCE(excluded.last_quit_at, users.last_quit_at),
-         skin_updated_at = CASE
-           WHEN excluded.skin_hash IS NOT NULL
-                AND (users.skin_hash IS NULL OR excluded.skin_hash <> users.skin_hash)
-           THEN excluded.skin_updated_at
-           ELSE users.skin_updated_at
-         END,
-         online = excluded.online',
+      $this->dialect->upsertProfile(),
       [
         $profile->uniqueId,
         $xuid,
@@ -248,8 +267,8 @@ final class SqlitePermissionRepository implements PermissionRepository {
   public function getPlayerProfile(string $identifier): ?PlayerProfile {
     $value = trim($identifier);
     $rows = $this->select(
-      'SELECT ' . SqliteSchema::PROFILE_COLUMNS . ' FROM users
-       WHERE unique_id = ? OR xuid = ? OR last_name = ? COLLATE NOCASE
+      'SELECT ' . self::PROFILE_COLUMNS . ' FROM users
+       WHERE unique_id = ? OR xuid = ? OR last_name = ?' . $this->nocase . '
        ORDER BY CASE WHEN unique_id = ? THEN 0 WHEN xuid = ? THEN 1 ELSE 2 END
        LIMIT 1',
       [$value, $value, $value, $value, $value]
@@ -261,8 +280,8 @@ final class SqlitePermissionRepository implements PermissionRepository {
     return array_map(
       self::rowToProfile(...),
       $this->select(
-        'SELECT ' . SqliteSchema::PROFILE_COLUMNS . ' FROM users
-         ORDER BY online DESC, last_seen_at DESC, last_name COLLATE NOCASE'
+        'SELECT ' . self::PROFILE_COLUMNS . ' FROM users
+         ORDER BY online DESC, last_seen_at DESC, last_name' . $this->nocase
       )
     );
   }
@@ -271,8 +290,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
     $timestamp = time();
     return (bool) $this->transaction(function () use ($group, $actor, $timestamp): bool {
       $created = $this->run(
-        'INSERT INTO permission_groups(name, display_name, weight, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO NOTHING',
+        $this->dialect->insertGroupIfMissing(),
         [$group->name, $group->displayName, $group->weight, $timestamp, $timestamp]
       ) > 0;
       if ($created) {
@@ -280,7 +298,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
           'display_name' => $group->displayName,
           'weight' => $group->weight
         ], $timestamp);
-        $this->revision++;
+        $this->bumpRevision();
       }
       return $created;
     });
@@ -313,7 +331,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
         throw new InvalidArgumentException("Unknown group '$group'");
       }
       $this->insertAudit($actor, 'group.setweight', SubjectRef::group($group), ['weight' => $weight], $timestamp);
-      $this->revision++;
+      $this->bumpRevision();
     });
   }
 
@@ -336,7 +354,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
         $this->insertAudit($actor, 'group.delete', SubjectRef::group($group), [
           'removed_nodes' => $removedNodes
         ], $timestamp);
-        $this->revision++;
+        $this->bumpRevision();
       }
       return $deleted;
     });
@@ -346,7 +364,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
     $timestamp = time();
     return (bool) $this->transaction(function () use ($track, $actor, $action, $timestamp): bool {
       $created = $this->run(
-        'INSERT INTO tracks(name, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT(name) DO NOTHING',
+        $this->dialect->insertTrackIfMissing(),
         [$track->name, $timestamp, $timestamp]
       ) > 0;
       if (!$created) {
@@ -354,7 +372,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
       }
       $this->insertTrackGroups($track->name, $track->groups);
       $this->insertAudit($actor, $action, ['track', $track->name], ['groups' => $track->groups], $timestamp);
-      $this->revision++;
+      $this->bumpRevision();
       return true;
     });
   }
@@ -397,7 +415,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
       $this->insertAudit($actor, $action, ['track', $record->name], $details + [
         'groups' => $record->groups
       ], $timestamp);
-      $this->revision++;
+      $this->bumpRevision();
       return $record;
     });
   }
@@ -419,7 +437,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
       ) > 0;
       if ($renamed) {
         $this->insertAudit($actor, 'track.rename', ['track', $to], ['from' => $from], $timestamp);
-        $this->revision++;
+        $this->bumpRevision();
       }
       return $renamed;
     });
@@ -433,7 +451,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
       $deleted = $this->run('DELETE FROM tracks WHERE name = ?', [$track]) > 0;
       if ($deleted) {
         $this->insertAudit($actor, 'track.delete', ['track', $track], [], $timestamp);
-        $this->revision++;
+        $this->bumpRevision();
       }
       return $deleted;
     });
@@ -474,7 +492,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
         (int) $this->requirePdo()->lastInsertId()
       );
       $this->insertAudit($actor, $action, $node->subject, self::nodeDetails($saved), $timestamp);
-      $this->revision++;
+      $this->bumpRevision();
       return $saved;
     });
   }
@@ -537,7 +555,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
     });
 
     if ($removed > 0) {
-      $this->revision++;
+      $this->bumpRevision();
     }
     return $removed;
   }
@@ -621,10 +639,10 @@ final class SqlitePermissionRepository implements PermissionRepository {
       $this->insertAudit($actor, $action, $subject, $details + [
         'new_node_id' => $stored?->id
       ], $timestamp);
+      $this->bumpRevision();
       return $stored;
     });
 
-    $this->revision++;
     return $saved;
   }
 
@@ -744,7 +762,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
 
     [$changedSubjects, $changedTracks, $added, $removed] = $outcome;
     if ($changedSubjects > 0 || $changedTracks > 0) {
-      $this->revision++;
+      $this->bumpRevision();
     }
     return new EditorStorageResult($this->revision, $changedSubjects, $changedTracks, $added, $removed);
   }
@@ -802,7 +820,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
 
     [$count, $subjects] = $result;
     if ($count > 0) {
-      $this->revision++;
+      $this->bumpRevision();
     }
     return new ExpiredNodes($count, $subjects);
   }
@@ -812,8 +830,7 @@ final class SqlitePermissionRepository implements PermissionRepository {
     $entries = [];
     $rows = $this->select(
       'SELECT id, created_at, actor, action, subject_type, subject_id, details_json
-       FROM audit_log ORDER BY id DESC LIMIT ?',
-      [$bounded]
+       FROM audit_log ORDER BY id DESC LIMIT ' . $bounded
     );
     foreach ($rows as $row) {
       $entries[] = [

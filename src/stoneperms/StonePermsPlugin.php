@@ -11,7 +11,8 @@ use stoneperms\application\EditorProtocol;
 use stoneperms\application\StonePermsManager;
 use stoneperms\command\CommandEnums;
 use stoneperms\command\StonePermsCommand;
-use stoneperms\infrastructure\SqlitePermissionRepository;
+use stoneperms\infrastructure\PdoPermissionRepository;
+use stoneperms\infrastructure\SqliteDialect;
 use stoneperms\platform\AttachmentManager;
 use stoneperms\platform\ConfigurationService;
 use stoneperms\platform\ContextCalculator;
@@ -42,7 +43,7 @@ final class StonePermsPlugin extends PluginToolkit {
   private const CATALOG_TASK = 'stoneperms.maintenance.catalog';
 
   private Settings $settings;
-  private SqlitePermissionRepository $repository;
+  private PdoPermissionRepository $repository;
   private StonePermsManager $manager;
   private ContextCalculator $contextCalculator;
   private AttachmentManager $attachmentManager;
@@ -79,7 +80,9 @@ final class StonePermsPlugin extends PluginToolkit {
     }
 
     try {
-      $this->repository = new SqlitePermissionRepository($this->getDataFolder() . $this->settings->databaseFile);
+      $this->repository = new PdoPermissionRepository(
+        new SqliteDialect($this->getDataFolder() . $this->settings->databaseFile)
+      );
       $this->repository->initialize($this->settings->defaultGroup);
     } catch (Throwable $throwable) {
       $this->getLogger()->critical('StonePerms could not open its database: ' . $throwable->getMessage());
