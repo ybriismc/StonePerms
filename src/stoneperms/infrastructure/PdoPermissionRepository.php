@@ -52,6 +52,25 @@ final class PdoPermissionRepository implements PermissionRepository {
     return $this->scope->server;
   }
 
+  /**
+  * Player rows in a shared database that belong to no server.
+  *
+  * They come from a store that was written while players were shared: nothing
+  * is lost, but a server that now names its own players cannot see them. Worth
+  * saying out loud rather than letting a network wonder where everyone went.
+  */
+  public function unownedPlayers(): int {
+    if (!$this->scope->isEnabled() || $this->pdo === null) {
+      return 0;
+    }
+    try {
+      $rows = $this->select("SELECT COUNT(*) AS total FROM users WHERE server = ''");
+    } catch (\Throwable) {
+      return 0;
+    }
+    return (int) ($rows[0]['total'] ?? 0);
+  }
+
   public function revision(): int {
     return $this->revision;
   }

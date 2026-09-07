@@ -213,6 +213,9 @@ Two things are worth knowing about the split:
   database would give.
 - Deleting a group deletes it for the network, and the assignments it left behind go with it on
   every server, not only on the one that ran the command.
+- Player rows written while players were shared belong to no server, so a server that now names its
+  own players does not see them. Nothing is lost, and the plugin says how many there are on startup
+  and in `/stoneperms storage status`.
 
 What does travel between servers is a number. Each write bumps a revision inside its own
 transaction, and each server polls that row — once a second by default — to learn that someone else

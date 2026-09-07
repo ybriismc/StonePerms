@@ -167,6 +167,16 @@ final class StonePermsPlugin extends PluginToolkit {
 
     $this->webConnector->start();
     StartupReport::log($this, $this->manager, $this->settings);
+
+    $unowned = $this->repository->unownedPlayers();
+    if ($unowned > 0) {
+      $this->getLogger()->warning(
+        "StonePerms found $unowned player row(s) in the database that belong to no server, from a "
+        . 'time when players were shared. This server does not see them. Set '
+        . 'storage.mysql.share_players to true to go back to one set of players, or clear them if '
+        . 'they are left over from a test.'
+      );
+    }
   }
 
   protected function onDisable(): void {
