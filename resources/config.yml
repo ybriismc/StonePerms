@@ -5,8 +5,29 @@
 debug: false
 
 storage:
-  # SQLite database stored in this plugin's data folder.
+  # "sqlite" keeps the data in this server's own file and needs nothing else.
+  #
+  # "mysql" points this server at a database that other servers can share.
+  # There is one set of data, not a copy per server, so nothing is copied and
+  # nothing is synchronised: every server reads and writes the same rows, and
+  # each one polls a revision number to learn that another changed something.
+  # Scope what should differ per server with the "server" context.
+  driver: sqlite
+
+  # The sqlite driver only: a filename inside this plugin's data folder.
   database: stoneperms.db
+
+  # The mysql driver only.
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    database: stoneperms
+    username: stoneperms
+    password: ""
+    charset: utf8mb4
+    # How often to check whether another server changed something, in server
+    # ticks. 20 ticks is one second.
+    sync_check_ticks: 20
 
 permissions:
   # Group every player receives automatically.

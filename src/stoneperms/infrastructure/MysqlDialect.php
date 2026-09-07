@@ -216,6 +216,14 @@ final class MysqlDialect implements SqlDialect {
     return (int) $row['revision'];
   }
 
+  public function lockRevision(PDO $pdo, int $current): int {
+    $row = $pdo->query('SELECT revision FROM shared_state WHERE id = 1 FOR UPDATE')->fetch();
+    if (!is_array($row) || !isset($row['revision'])) {
+      return $current;
+    }
+    return (int) $row['revision'];
+  }
+
   public function isLostConnection(Throwable $error): bool {
     if (!$error instanceof PDOException) {
       return false;

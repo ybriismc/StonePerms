@@ -33,7 +33,8 @@ final class Settings {
     public readonly string $webServerToken = '',
     public readonly string $webServerName = 'PocketMine-MP server',
     public readonly StartupSettings $startup = new StartupSettings(),
-    public readonly DisplaySettings $display = new DisplaySettings()
+    public readonly DisplaySettings $display = new DisplaySettings(),
+    public readonly StorageSettings $storage = new StorageSettings()
   ) {}
 
   /** @param array<string, mixed> $raw */
@@ -94,7 +95,8 @@ final class Settings {
           ['name'],
           'display.nametag.format'
         )
-      )
+      ),
+      StorageSettings::load($storage)
     );
   }
 
@@ -151,7 +153,8 @@ final class Settings {
       $this->webServerToken,
       $this->webServerName,
       $this->startup,
-      $display
+      $display,
+      $this->storage
     );
   }
 
@@ -174,7 +177,8 @@ final class Settings {
       $overrides['webServerToken'] ?? $this->webServerToken,
       $overrides['webServerName'] ?? $this->webServerName,
       $overrides['startup'] ?? $this->startup,
-      $overrides['display'] ?? $this->display
+      $overrides['display'] ?? $this->display,
+      $overrides['storage'] ?? $this->storage
     );
   }
 

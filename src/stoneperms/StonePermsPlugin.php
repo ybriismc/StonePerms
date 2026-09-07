@@ -11,7 +11,9 @@ use stoneperms\application\EditorProtocol;
 use stoneperms\application\StonePermsManager;
 use stoneperms\command\CommandEnums;
 use stoneperms\command\StonePermsCommand;
+use stoneperms\infrastructure\MysqlDialect;
 use stoneperms\infrastructure\PdoPermissionRepository;
+use stoneperms\infrastructure\SqlDialect;
 use stoneperms\infrastructure\SqliteDialect;
 use stoneperms\platform\AttachmentManager;
 use stoneperms\platform\ConfigurationService;
@@ -41,6 +43,8 @@ final class StonePermsPlugin extends PluginToolkit {
 
   private const EXPIRY_TASK = 'stoneperms.maintenance.expiry';
   private const CATALOG_TASK = 'stoneperms.maintenance.catalog';
+  private const SYNC_TASK = 'stoneperms.maintenance.sync';
+  private const STORAGE_WARNING_SECONDS = 30;
 
   private Settings $settings;
   private PdoPermissionRepository $repository;
@@ -55,6 +59,7 @@ final class StonePermsPlugin extends PluginToolkit {
   private FormController $formController;
   private PlaceholderBridge $placeholderBridge;
   private int $suggestionRevision = -1;
+  private int $lastStorageWarningAt = 0;
 
   protected function onEnable(): void {
     TaskSchedulerAPI::init($this);
@@ -70,9 +75,10 @@ final class StonePermsPlugin extends PluginToolkit {
 
     // PocketMine-MP does not require PDO, so say plainly what is missing
     // rather than surfacing a driver error from inside the storage layer.
-    if (!extension_loaded('pdo_sqlite')) {
+    $extension = $this->settings->storage->isShared() ? 'pdo_mysql' : 'pdo_sqlite';
+    if (!extension_loaded($extension)) {
       $this->getLogger()->critical(
-        'StonePerms needs the pdo_sqlite PHP extension, which this server does not have. '
+        "StonePerms needs the $extension PHP extension, which this server does not have. "
         . 'Install it, or run a PocketMine-MP build that includes it.'
       );
       $this->getServer()->getPluginManager()->disablePlugin($this);
@@ -80,9 +86,7 @@ final class StonePermsPlugin extends PluginToolkit {
     }
 
     try {
-      $this->repository = new PdoPermissionRepository(
-        new SqliteDialect($this->getDataFolder() . $this->settings->databaseFile)
-      );
+      $this->repository = new PdoPermissionRepository($this->createDialect());
       $this->repository->initialize($this->settings->defaultGroup);
     } catch (Throwable $throwable) {
       $this->getLogger()->critical('StonePerms could not open its database: ' . $throwable->getMessage());
@@ -166,6 +170,7 @@ final class StonePermsPlugin extends PluginToolkit {
   protected function onDisable(): void {
     TaskSchedulerAPI::cancel(self::EXPIRY_TASK);
     TaskSchedulerAPI::cancel(self::CATALOG_TASK);
+    TaskSchedulerAPI::cancel(self::SYNC_TASK);
 
     // onEnable can bail out part-way through, so each teardown is guarded
     // rather than assuming every collaborator was constructed.
@@ -197,6 +202,10 @@ final class StonePermsPlugin extends PluginToolkit {
 
   public function manager(): StonePermsManager {
     return $this->manager;
+  }
+
+  public function storage(): PdoPermissionRepository {
+    return $this->repository;
   }
 
   public function contexts(): ContextCalculator {
@@ -268,9 +277,50 @@ final class StonePermsPlugin extends PluginToolkit {
   * Temporary nodes expire on a timer rather than lazily, so a player loses a
   * timed permission when it runs out instead of at their next check.
   */
+  /**
+  * The store this server was configured for. Everything above it is the same
+  * either way; only where the rows live changes.
+  */
+  private function createDialect(): SqlDialect {
+    $storage = $this->settings->storage;
+    if (!$storage->isShared()) {
+      return new SqliteDialect($this->getDataFolder() . $this->settings->databaseFile);
+    }
+    return new MysqlDialect(
+      $storage->host,
+      $storage->port,
+      $storage->database,
+      $storage->username,
+      $storage->password,
+      $storage->charset
+    );
+  }
+
+  /**
+  * Says the database is unreachable, and then keeps quiet about it. A tick
+  * that cannot reach the database will not reach it on the next tick either,
+  * and a console filling up thirty times a second helps nobody.
+  */
+  public function reportStorageProblem(Throwable $error): void {
+    $now = time();
+    if ($now - $this->lastStorageWarningAt < self::STORAGE_WARNING_SECONDS) {
+      return;
+    }
+    $this->lastStorageWarningAt = $now;
+    $this->getLogger()->warning(
+      'StonePerms cannot reach its database: ' . $error->getMessage()
+      . '. Permissions already loaded keep working; changes are refused until it answers again.'
+    );
+  }
+
   private function scheduleMaintenance(): void {
     TaskSchedulerAPI::repeat($this->settings->expiryCheckTicks, function (): void {
-      $expired = $this->manager->cleanupExpired();
+      try {
+        $expired = $this->manager->cleanupExpired();
+      } catch (Throwable $throwable) {
+        $this->reportStorageProblem($throwable);
+        return;
+      }
       if ($expired->count > 0) {
         StonePermsEvents::emit(StonePermsEvents::NODES_EXPIRED, [
           'count' => $expired->count,
@@ -291,6 +341,20 @@ final class StonePermsPlugin extends PluginToolkit {
         CommandEnums::refresh($this->manager);
       }
     }, self::CATALOG_TASK);
+
+    // On a shared database the revision is the only thing that has to travel
+    // between servers: when it moves, another server wrote something and every
+    // snapshot cached here was built before it.
+    if ($this->repository->isShared()) {
+      TaskSchedulerAPI::repeat($this->settings->storage->syncCheckTicks, function (): void {
+        if (!$this->repository->refreshSharedRevision()) {
+          return;
+        }
+        $this->suggestionRevision = $this->repository->revision();
+        CommandEnums::refresh($this->manager);
+        $this->refreshEveryone();
+      }, self::SYNC_TASK);
+    }
   }
 
   private function persistSettings(Settings $updated): void {

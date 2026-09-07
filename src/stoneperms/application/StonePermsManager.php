@@ -22,6 +22,7 @@ use stoneperms\domain\TrackMoveStatus;
 use stoneperms\domain\TrackRecord;
 use stoneperms\domain\UserRecord;
 use stoneperms\domain\Validation;
+use Throwable;
 
 /**
 * Every operation StonePerms can perform on permission data, in one place.
@@ -646,7 +647,20 @@ final class StonePermsManager {
     if ($cached !== null && $cached[0] === $this->repository->revision()) {
       return $cached[1];
     }
-    $snapshot = $this->repository->loadSnapshot($user, $this->defaultGroup);
+
+    // A database that stops answering must not take a player's permissions
+    // with it: the last snapshot that did load is served until it answers
+    // again. Only a player nobody has ever resolved has nothing to fall back
+    // on, and for that one the caller decides what to do.
+    try {
+      $snapshot = $this->repository->loadSnapshot($user, $this->defaultGroup);
+    } catch (Throwable $throwable) {
+      if ($cached === null) {
+        throw $throwable;
+      }
+      return $cached[1];
+    }
+
     $this->snapshotCache[$user->identifier] = [$this->repository->revision(), $snapshot];
     return $snapshot;
   }

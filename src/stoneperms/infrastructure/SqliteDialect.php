@@ -138,6 +138,11 @@ final class SqliteDialect implements SqlDialect {
     return $current;
   }
 
+  /** One server writes this file, so the counter it holds is the whole truth. */
+  public function lockRevision(PDO $pdo, int $current): int {
+    return $current;
+  }
+
   public function isLostConnection(Throwable $error): bool {
     return false;
   }

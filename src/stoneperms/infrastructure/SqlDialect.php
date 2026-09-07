@@ -66,6 +66,15 @@ interface SqlDialect {
   public function readRevision(PDO $pdo, int $current): int;
 
   /**
+  * The revision, held against other writers until this transaction ends.
+  *
+  * An editor batch checks the revision it was built against and then writes.
+  * Without the lock two servers could both pass that check and both write,
+  * and the second would quietly undo the first.
+  */
+  public function lockRevision(PDO $pdo, int $current): int;
+
+  /**
   * Whether this failure means the connection died rather than the statement
   * being wrong. Only those are worth retrying.
   */

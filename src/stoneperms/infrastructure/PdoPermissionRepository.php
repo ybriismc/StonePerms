@@ -657,12 +657,6 @@ final class PdoPermissionRepository implements PermissionRepository {
     string $actor,
     string $sessionId
   ): EditorStorageResult {
-    if ($this->revision !== $expectedRevision) {
-      throw new RevisionConflictException(
-        "Editor base revision $expectedRevision is stale; current revision is {$this->revision}"
-      );
-    }
-
     $timestamp = time();
     $outcome = $this->transaction(function () use (
       $expectedRevision,
@@ -672,6 +666,16 @@ final class PdoPermissionRepository implements PermissionRepository {
       $sessionId,
       $timestamp
     ): array {
+      // Taken first and held until this transaction ends, so a batch built on
+      // one server cannot be applied over a change another server made while
+      // the editor was open.
+      $current = $this->dialect->lockRevision($this->requirePdo(), $this->revision);
+      if ($current !== $expectedRevision) {
+        throw new RevisionConflictException(
+          "Editor base revision $expectedRevision is stale; current revision is $current"
+        );
+      }
+
       $currentNodes = [];
       foreach ($subjectChanges as $change) {
         $current = $this->nodesFor($change->subject, true);

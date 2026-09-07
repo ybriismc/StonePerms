@@ -30,7 +30,9 @@ final class StartupReport {
     $tracks = $manager->listTracks();
     $web = $plugin->web()->status();
 
-    $logger->info('Storage: SQLite at plugin_data/StonePerms/' . $settings->databaseFile);
+    $logger->info('Storage: ' . $plugin->storage()->describe() . ($settings->storage->isShared()
+      ? ', shared with every server pointed at it'
+      : ' in plugin_data/StonePerms'));
     $logger->info(
       'Permissions: default group "' . $settings->defaultGroup . '", '
       . count($groups) . ' group(s), ' . count($tracks) . ' track(s)'

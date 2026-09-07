@@ -9,9 +9,9 @@ use InvalidArgumentException;
 use pocketmine\permission\PermissionAttachment;
 use pocketmine\permission\PermissionManager;
 use pocketmine\player\Player;
-use pocketmine\plugin\Plugin;
 use stoneperms\application\StonePermsManager;
 use stoneperms\domain\Validation;
+use stoneperms\StonePermsPlugin;
 use Throwable;
 
 /**
@@ -39,7 +39,7 @@ final class AttachmentManager {
 
   /** @param (callable(Player): void)|null $onPlayerApplied */
   public function __construct(
-    private readonly Plugin $plugin,
+    private readonly StonePermsPlugin $plugin,
     private readonly StonePermsManager $manager,
     private readonly ContextCalculator $contexts,
     ?callable $onPlayerApplied = null
@@ -77,11 +77,19 @@ final class AttachmentManager {
       $names[$key] = true;
     }
 
-    $desired = $this->manager->resolvePermissions(
-      $subject,
-      array_keys($names),
-      $this->contexts->calculate($player)
-    );
+    // A player who joins while the database is unreachable gets no attachment
+    // rather than a wrong one: StonePerms grants nothing and denies nothing,
+    // and the next refresh applies the real answer once the store is back.
+    try {
+      $desired = $this->manager->resolvePermissions(
+        $subject,
+        array_keys($names),
+        $this->contexts->calculate($player)
+      );
+    } catch (Throwable $throwable) {
+      $this->plugin->reportStorageProblem($throwable);
+      return false;
+    }
     ksort($desired);
 
     $previous = $this->applied[$identity] ?? [];
