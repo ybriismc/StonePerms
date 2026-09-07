@@ -152,6 +152,106 @@ context. Quote values containing spaces, for example
 
 </details>
 
+## Contexts
+
+A context is a `key=value` pair. Every node — a permission, a parent, a meta value, a prefix or a
+suffix — can carry a set of them, and the plugin builds a set for the player at the moment of the
+check. The two are compared by one rule:
+
+> A node applies when **every key it names** is present in the player's active set with **at least
+> one matching value**. Keys the node does not name are ignored.
+
+So a node with no contexts at all applies everywhere; repeating a key means *or*; naming different
+keys means *and*.
+
+```text
+world=lobby                      only in the lobby world
+world=lobby world=arena          in either world
+world=lobby gamemode=survival    in the lobby, and only in survival
+(none)                           everywhere
+```
+
+### The keys the plugin provides
+
+| Key | Value | Notes |
+| --- | ----- | ----- |
+| `server` | `contexts.server` from the config | Defaults to `global`; see below |
+| `world` | The world's folder name | |
+| `dimension` | `overworld`, `nether`, `the_end` | Falls back to `overworld` when the build does not expose it |
+| `gamemode` | The player's current gamemode | |
+| `device_os` | The device reported at login | Off by default: `include_device_os` |
+| `locale` | The client's locale | Off by default: `include_locale` |
+
+Keys and values are lowercased and trimmed, and must match `[a-z0-9][a-z0-9_.-]{0,63}` and
+`[a-z0-9][a-z0-9_.:/-]{0,127}`. A value that does not fit becomes `unknown` rather than failing a
+permission check mid-flight.
+
+### When the active set is rebuilt
+
+On join, on a gamemode change, and on a teleport that crosses worlds — the three things that can
+change a built-in key. The result is compared with what is already on the player's attachment and
+only the difference is written.
+
+A check made for an offline player or from the console has no player to build a set from, so it
+resolves against an **empty** set: nodes scoped to a context do not apply there. That is why
+`/stoneperms user ... check` can disagree with what the player sees in game unless you pass the same
+contexts, which that command accepts as trailing `key=value` tokens.
+
+### Contexts break ties
+
+Contexts are not only a filter. When several nodes answer the same permission, the winner is decided
+in this order:
+
+1. Direct over inherited
+2. Temporary over permanent
+3. Node specificity — `a.b.c` beats `a.*` beats `*`
+4. **Context specificity — the node constraining more keys wins**
+5. Group weight
+6. Shorter inheritance distance
+7. The expiry that comes first
+8. `false` over `true`
+
+Step 4 is what makes the common pattern work: grant broadly, then deny in one place.
+
+```text
+/stoneperms group permission ceo set fly.use true                 grant everywhere
+/stoneperms group permission ceo set fly.use false world=lobby2   wins in lobby2
+```
+
+The same group can also look different per world, since a prefix is a node like any other, and a
+player can even hold a group in one world only:
+
+```text
+/stoneperms group prefix ceo set 100 "§cCEO " world=lobby
+/stoneperms group prefix ceo set 100 "§6CEO " world=lobby2
+/stoneperms user Steve parent add ceo world=lobby
+```
+
+### `server` is an ordinary key, and `global` is an ordinary value
+
+Nothing in the plugin treats the word `global` specially — it is just the default value of
+`contexts.server`. `server=global` therefore matches only while that setting still says `global`;
+change it and every node scoped that way silently stops applying.
+
+To mean *everywhere*, give the node **no context at all**. Scope with `server=` only when one set of
+data serves more than one server — several servers on the same dashboard, or the same database
+reused — where each server names itself:
+
+```yaml
+contexts:
+  server: lobby      # and 'survival' on the other server
+```
+
+On a single server with its own database, `world`, `dimension` and `gamemode` are the useful keys and
+`server` is best left alone.
+
+### Contexts from other plugins
+
+A plugin can contribute its own key, which is how a minigame exposes an arena or a region plugin
+exposes a zone. See [Plugin API](#plugin-api) for `registerContextProvider`. The callback may return
+a string, a list of strings, or `null` to contribute nothing; if it throws or returns a value that
+does not validate, it is skipped rather than breaking the check.
+
 ## Plugin API
 
 ```php
