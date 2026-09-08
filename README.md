@@ -147,7 +147,6 @@ The root command is `/stoneperms`; aliases are `/sp` and `/perms`. Everything is
 /stoneperms user <name|uuid|xuid> showtracks [key=value ...]
 
 /stoneperms storage status
-/stoneperms storage migrate [--apply] [--scope-to-server]
 ```
 
 Durations combine: `30m`, `2h30m`, `7d`, `1mo2d`. Trailing `key=value` tokens scope a change to a
@@ -229,6 +228,10 @@ Two things follow from sharing one set of data, and both are the point:
 - A node with no context now applies on **every** server. Use the `server` context to scope what
   should differ — see [Contexts](#contexts).
 
+Switching an existing server over starts from an empty database: point `storage.driver` at `mysql`,
+restart, and create the groups and tracks again. There is no migration command, and the SQLite file
+is left where it is, so switching back is a config change and a restart.
+
 ### When the database is unreachable
 
 Permissions already resolved keep working: the last snapshot that loaded is served rather than an
@@ -240,26 +243,6 @@ to be reconciled later against whatever the other servers did meanwhile, and tha
 data gets lost quietly; failing in front of the admin who typed the command is the honest version.
 A player who joins during an outage gets no attachment at all rather than a wrong one — StonePerms
 grants nothing and denies nothing until the store answers again.
-
-### Moving an existing server onto MySQL
-
-```text
-/stoneperms storage status                             where the data lives now
-/stoneperms storage migrate                            what it would copy, writing nothing
-/stoneperms storage migrate --apply --scope-to-server   do it, keeping today's behaviour
-```
-
-Point `storage.driver` at `mysql`, restart, then run the migration: it reads this server's own
-SQLite file into the shared database, where its groups and tracks become the network's and its
-players stay this server's. It is additive and never overwrites — a group or track the
-target already has is kept and reported, a differing weight is named rather than silently resolved,
-and running it twice ends where running it once did. The original file is left untouched, so it
-stays as a backup.
-
-`--scope-to-server` matters more than it looks. A node in a server's own file applied only to that
-server by accident of where it lived; in a shared database it would apply everywhere. The flag tags
-every copied node with that server's own `server` context, so each server behaves exactly as it did
-before the move. Take the scopes off later, one at a time, for the things that should be global.
 
 ## Contexts
 

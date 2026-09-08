@@ -21,12 +21,8 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   minigame as whatever that server gives them, usually the default group. Each
   server is identified by its own `contexts.server` name, and
   `storage.mysql.share_players: true` asks for one set of players instead.
-- **`/stoneperms storage`.** `status` says where the data lives and whether
-  other servers can write there. `migrate` reads this server's SQLite file into
-  the shared database — writing nothing until `--apply`, keeping anything the
-  target already has, and safe to run twice. `--scope-to-server` tags every
-  copied node with that server's `server` context so behaviour does not change
-  the moment the data is merged.
+- **`/stoneperms storage`.** Says where the data lives, whether other servers
+  can write there, and whether the players here are this server's own.
 - The startup report and `/stoneperms info` say which store is in use.
 
 ### Changed

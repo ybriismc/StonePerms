@@ -17,8 +17,8 @@ declare(strict_types = 1);
 *      on one has to reach the other through the revision it polls, and a stale
 *      editor batch from the second has to be refused rather than applied over
 *      the first.
-*   3. A migration of a SQLite file into the database: additive, repeatable,
-*      and scoped so a merge does not change what a node means.
+*   3. Players belonging to their own server while the groups and tracks stay
+*      the network's.
 *
 * The database must be empty. The tool creates the schema, uses it, and drops
 * what it created, so point it at a scratch database rather than a live one.
@@ -55,7 +55,6 @@ namespace {
 use stoneperms\application\EditorSubjectChange;
 use stoneperms\application\RevisionConflictException;
 use stoneperms\application\StonePermsManager;
-use stoneperms\application\StorageMigrator;
 use stoneperms\domain\ContextSet;
 use stoneperms\domain\GroupRecord;
 use stoneperms\domain\Node;
@@ -369,58 +368,6 @@ $lobby->close();
 $minigame->close();
 
 // 3 -------------------------------------------------------------------------
-echo "\nMigrating a SQLite file in\n";
-@unlink($file);
-$source = new PdoPermissionRepository(new SqliteDialect($file));
-$source->initialize('default');
-$source->createGroup(new GroupRecord('ceo', 'CEO', 100), 'admin');
-$source->createGroup(new GroupRecord('vip', 'VIP', 10), 'admin');
-$source->createTrack(new TrackRecord('staff', ['vip', 'ceo']), 'admin');
-$source->upsertUser(new UserRecord(UUID, 'Steve'));
-$source->saveNode(new Node(SubjectRef::user(UUID), NodeType::PARENT, 'ceo', 'true'), 'admin', 'user.parent.add');
-$source->saveNode(
-  new Node(SubjectRef::group('ceo'), NodeType::PERMISSION, 'fly.use', 'true', ContextSet::parse('world=lobby')),
-  'admin',
-  'group.permission.set'
-);
-$source->close();
-
-fresh($dialect()->open());
-$target = new PdoPermissionRepository($dialect());
-$target->initialize('default');
-$target->createGroup(new GroupRecord('vip', 'VIP', 55), 'another-server');
-
-$open = static function () use ($file): PdoPermissionRepository {
-  $repo = new PdoPermissionRepository(new SqliteDialect($file));
-  $repo->initialize('default');
-  return $repo;
-};
-
-$source = $open();
-$plan = (new StorageMigrator($source, $target))->copy('admin', true, 'lobby1');
-$source->close();
-$check('a dry run writes nothing', count($target->listGroups()), 2);
-$check('it counts what it would add', $plan->groups, 1);
-$check('it names the differing weight', str_contains(implode(' ', $plan->notes), 'weight 55') ? 'yes' : 'no', 'yes');
-
-$source = $open();
-(new StorageMigrator($source, $target))->copy('admin', false, 'lobby1');
-$source->close();
-$check('groups after applying', count($target->listGroups()), 3);
-$check('the target kept its own vip', $target->getGroup('vip')?->weight, 55);
-$check('the track arrived', implode('>', $target->getTrack('staff')?->groups ?? []), 'vip>ceo');
-$snapshot = $target->loadSnapshot(SubjectRef::user(UUID), 'default');
-$check('the copy is scoped to its server', var_export($resolver->resolve($snapshot, 'fly.use', ContextSet::parse('world=lobby server=lobby1'), $now)->value, true), 'true');
-$check('and not to another', var_export($resolver->resolve($snapshot, 'fly.use', ContextSet::parse('world=lobby server=minigame1'), $now)->value, true), 'NULL');
-
-$source = $open();
-(new StorageMigrator($source, $target))->copy('admin', false, 'lobby1');
-$source->close();
-$check('running it twice changes nothing', count($target->nodesFor(SubjectRef::group('ceo'))), 1);
-$target->close();
-@unlink($file);
-
-// 4 -------------------------------------------------------------------------
 echo "\nPlayers belong to their server, definitions belong to the network\n";
 fresh($dialect()->open());
 $scoped = static fn(string $server): PdoPermissionRepository => new PdoPermissionRepository(
