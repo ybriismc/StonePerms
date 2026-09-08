@@ -148,9 +148,9 @@ function fresh(PDO $pdo): void {
 }
 
 /** Everything the store can be asked, in an order that leaves a known shape behind. */
-function scenario(SqlDialect $dialect): array {
+function scenario(SqlDialect $dialect, ?ServerScope $scope = null): array {
   $out = [];
-  $repo = new PdoPermissionRepository($dialect);
+  $repo = new PdoPermissionRepository($dialect, $scope);
   $repo->initialize('default');
   $now = time();
 
@@ -239,6 +239,36 @@ function scenario(SqlDialect $dialect): array {
   $out['editor.added'] = $result->nodesAdded;
   $out['editor.nodes'] = count($repo->nodesFor(SubjectRef::group('vip')));
 
+  // Promote and demote go through this rather than a save, so it needs the
+  // same exercise as everything else that writes a node.
+  $parents = array_values(array_filter(
+    $repo->nodesFor($user),
+    static fn(Node $node): bool => $node->type === NodeType::PARENT
+  ));
+  $moved = $repo->replaceParentNode(
+    $parents[0] ?? null,
+    new Node($user, NodeType::PARENT, 'mod', 'true'),
+    'check',
+    'user.promote',
+    ['from' => 'vip', 'to' => 'mod']
+  );
+  $out['promote'] = $moved?->key;
+  $out['promote.parents'] = count(array_filter(
+    $repo->nodesFor($user),
+    static fn(Node $node): bool => $node->type === NodeType::PARENT
+  ));
+
+  $repo->recordAudit('check', 'web.settings.update', ['field' => 'chat']);
+  $repo->createTrack(new TrackRecord('throwaway', ['mod']), 'check');
+  $out['track.delete'] = $repo->deleteTrack('throwaway', 'check') ? 'deleted' : 'no';
+  $repo->createGroup(new GroupRecord('throwaway', 'Throwaway', 1), 'check');
+  $repo->saveNode(new Node($user, NodeType::PARENT, 'throwaway', 'true'), 'check', 'user.parent.add');
+  $out['group.delete'] = $repo->deleteGroup('throwaway', 'check') ? 'deleted' : 'no';
+  $out['group.delete.clears.parents'] = count(array_filter(
+    $repo->nodesFor($user),
+    static fn(Node $node): bool => $node->key === 'throwaway'
+  ));
+
   $audit = $repo->recentAudit(5);
   $out['audit.count'] = count($audit);
   $out['audit.last'] = $audit[0]['action'] ?? '';
@@ -253,15 +283,29 @@ echo "  sqlite: temporary file\n";
 echo "  mysql : $username@$host:$port/$database\n\n";
 
 // 1 -------------------------------------------------------------------------
-echo "Both engines answer the same\n";
+echo "Both engines answer the same, owned rows or not\n";
 $file = sys_get_temp_dir() . '/stoneperms-check-' . getmypid() . '.db';
 @unlink($file);
 $sqlite = scenario(new SqliteDialect($file));
 @unlink($file);
+
 fresh($dialect()->open());
 $mysql = scenario($dialect());
+
+// The same script again with the rows owned by a server. One server on its own
+// must not behave differently for having its name on its players, and running
+// every write path under a scope is what catches a statement whose parameters
+// no longer match its placeholders.
+fresh($dialect()->open());
+$owned = ServerScope::of('lobby1');
+$scoped = scenario(
+  new MysqlDialect($host, $port, $database, $username, $password, 'utf8mb4', $owned),
+  $owned
+);
+
 foreach ($sqlite as $key => $value) {
   $check($key, $mysql[$key] ?? '<missing>', (string) $value);
+  $check($key . ' (owned)', $scoped[$key] ?? '<missing>', (string) $value);
 }
 
 // 2 -------------------------------------------------------------------------

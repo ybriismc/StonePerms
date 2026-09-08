@@ -283,7 +283,8 @@ final class PdoPermissionRepository implements PermissionRepository {
         $profile->lastJoinedAt,
         $profile->lastQuitAt,
         $profile->skinUpdatedAt,
-        $profile->online ? 1 : 0
+        $profile->online ? 1 : 0,
+        ...$this->scope->params()
       ]
     );
 
