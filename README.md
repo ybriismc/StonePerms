@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="StonePerms 1.0.0" src="https://img.shields.io/badge/StonePerms-1.0.0-d8d58d?style=flat-square">
+  <img alt="StonePerms 1.1.0" src="https://img.shields.io/badge/StonePerms-1.1.0-d8d58d?style=flat-square">
   <img alt="PocketMine-MP 5" src="https://img.shields.io/badge/PocketMine--MP-5.0.0%2B-d8d58d?style=flat-square">
   <img alt="PHP 8.2 or newer" src="https://img.shields.io/badge/PHP-8.2%2B-68737a?style=flat-square">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/License-MIT-68737a?style=flat-square"></a>
