@@ -39,36 +39,12 @@ final class PdoPermissionRepository implements PermissionRepository {
 
   private ?PDO $pdo = null;
   private int $revision = 0;
-  private readonly string $nocase;
+  private readonly string $users;
   private readonly ServerScope $scope;
 
   public function __construct(private readonly SqlDialect $dialect, ?ServerScope $scope = null) {
-    $this->nocase = $dialect->caseInsensitive();
+    $this->users = $dialect->usersTable();
     $this->scope = $scope ?? ServerScope::shared();
-  }
-
-  /** The server whose players these are, or '' when every server shares them. */
-  public function playerScope(): string {
-    return $this->scope->server;
-  }
-
-  /**
-  * Player rows in a shared database that belong to no server.
-  *
-  * They come from a store that was written while players were shared: nothing
-  * is lost, but a server that now names its own players cannot see them. Worth
-  * saying out loud rather than letting a network wonder where everyone went.
-  */
-  public function unownedPlayers(): int {
-    if (!$this->scope->isEnabled() || $this->pdo === null) {
-      return 0;
-    }
-    try {
-      $rows = $this->select("SELECT COUNT(*) AS total FROM users WHERE server = ''");
-    } catch (\Throwable) {
-      return 0;
-    }
-    return (int) ($rows[0]['total'] ?? 0);
   }
 
   public function revision(): int {
@@ -113,34 +89,24 @@ final class PdoPermissionRepository implements PermissionRepository {
     return true;
   }
 
+  /** The server whose players this table holds. */
+  public function playerScope(): string {
+    return $this->scope->server;
+  }
+
   public function initialize(string $defaultGroup): void {
     $groupName = Validation::groupName($defaultGroup);
     $this->pdo = $this->dialect->open();
-    $this->migrate();
+    $this->dialect->prepareStore($this->requirePdo());
     $this->revision = $this->dialect->readRevision($this->requirePdo(), 0);
 
     $timestamp = time();
-    $this->run($this->dialect->insertGroupIfMissing(), [$groupName, $groupName, 0, $timestamp, $timestamp]);
-  }
-
-  private function migrate(): void {
-    $pdo = $this->requirePdo();
-    $pdo->exec(
-      'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at BIGINT NOT NULL)'
+    $created = $this->run(
+      $this->dialect->insertGroupIfMissing(),
+      [$groupName, $groupName, 0, $timestamp, $timestamp]
     );
-    $applied = [];
-    foreach ($pdo->query('SELECT version FROM schema_migrations')->fetchAll() as $row) {
-      $applied[(int) $row['version']] = true;
-    }
-    foreach ($this->dialect->migrations() as $version => $statements) {
-      if (isset($applied[$version])) {
-        continue;
-      }
-      foreach ($statements as $statement) {
-        $pdo->exec($statement);
-      }
-      $record = $pdo->prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)');
-      $record->execute([$version, time()]);
+    if ($created > 0) {
+      $this->revision = $this->dialect->bumpRevision($this->requirePdo(), $this->revision);
     }
   }
 
@@ -211,6 +177,9 @@ final class PdoPermissionRepository implements PermissionRepository {
   private function transaction(callable $callback): mixed {
     $pdo = $this->requirePdo();
     $pdo->beginTransaction();
+    // Held until this transaction ends, so two servers writing at once are
+    // serialised and each one starts from what the other committed.
+    $this->revision = $this->dialect->lockRevision($pdo, $this->revision);
     try {
       $result = $callback();
       $pdo->commit();
@@ -226,20 +195,21 @@ final class PdoPermissionRepository implements PermissionRepository {
   public function upsertUser(UserRecord $user): void {
     $timestamp = time();
     $xuid = $user->xuid !== null && trim($user->xuid) !== '' ? trim($user->xuid) : null;
+    $this->dialect->validateIdentity($this->requirePdo(), $user->uniqueId, $xuid);
     $this->run(
       $this->dialect->upsertUser(),
-      [$user->uniqueId, $xuid, $user->lastName, $timestamp, $timestamp, ...$this->scope->params()]
+      [$user->uniqueId, $xuid, $user->lastName, $timestamp, $timestamp]
     );
   }
 
   public function findUser(string $identifier): ?UserRecord {
     $value = trim($identifier);
     $rows = $this->select(
-      'SELECT unique_id, xuid, last_name FROM users
-       WHERE (unique_id = ? OR xuid = ? OR last_name = ?' . $this->nocase . ')' . $this->scope->userFilter() . '
+      'SELECT unique_id, xuid, last_name FROM ' . $this->users . '
+       WHERE unique_id = ? OR xuid = ? OR LOWER(last_name) = LOWER(?)
        ORDER BY CASE WHEN unique_id = ? THEN 0 WHEN xuid = ? THEN 1 ELSE 2 END
        LIMIT 1',
-      [$value, $value, $value, ...$this->scope->params(), $value, $value]
+      [$value, $value, $value, $value, $value]
     );
     return $rows === [] ? null : self::rowToUser($rows[0]);
   }
@@ -247,16 +217,14 @@ final class PdoPermissionRepository implements PermissionRepository {
   public function listUsers(): array {
     return array_map(
       self::rowToUser(...),
-      $this->select(
-        'SELECT unique_id, xuid, last_name FROM users' . $this->scope->userWhere()
-        . ' ORDER BY last_name' . $this->nocase,
-        $this->scope->params()
-      )
+      $this->select('SELECT unique_id, xuid, last_name FROM ' . $this->users
+        . ' ORDER BY LOWER(last_name), unique_id')
     );
   }
 
   public function upsertPlayerProfile(PlayerProfile $profile): PlayerProfile {
     $xuid = $profile->xuid !== null && trim($profile->xuid) !== '' ? trim($profile->xuid) : null;
+    $this->dialect->validateIdentity($this->requirePdo(), $profile->uniqueId, $xuid);
     $this->run(
       $this->dialect->upsertProfile(),
       [
@@ -283,8 +251,7 @@ final class PdoPermissionRepository implements PermissionRepository {
         $profile->lastJoinedAt,
         $profile->lastQuitAt,
         $profile->skinUpdatedAt,
-        $profile->online ? 1 : 0,
-        ...$this->scope->params()
+        $profile->online ? 1 : 0
       ]
     );
 
@@ -298,11 +265,11 @@ final class PdoPermissionRepository implements PermissionRepository {
   public function getPlayerProfile(string $identifier): ?PlayerProfile {
     $value = trim($identifier);
     $rows = $this->select(
-      'SELECT ' . self::PROFILE_COLUMNS . ' FROM users
-       WHERE (unique_id = ? OR xuid = ? OR last_name = ?' . $this->nocase . ')' . $this->scope->userFilter() . '
+      'SELECT ' . self::PROFILE_COLUMNS . ' FROM ' . $this->users . '
+       WHERE unique_id = ? OR xuid = ? OR LOWER(last_name) = LOWER(?)
        ORDER BY CASE WHEN unique_id = ? THEN 0 WHEN xuid = ? THEN 1 ELSE 2 END
        LIMIT 1',
-      [$value, $value, $value, ...$this->scope->params(), $value, $value]
+      [$value, $value, $value, $value, $value]
     );
     return $rows === [] ? null : self::rowToProfile($rows[0]);
   }
@@ -310,11 +277,8 @@ final class PdoPermissionRepository implements PermissionRepository {
   public function listPlayerProfiles(): array {
     return array_map(
       self::rowToProfile(...),
-      $this->select(
-        'SELECT ' . self::PROFILE_COLUMNS . ' FROM users' . $this->scope->userWhere()
-        . ' ORDER BY online DESC, last_seen_at DESC, last_name' . $this->nocase,
-        $this->scope->params()
-      )
+      $this->select('SELECT ' . self::PROFILE_COLUMNS . ' FROM ' . $this->users
+        . ' ORDER BY online DESC, last_seen_at DESC, LOWER(last_name)')
     );
   }
 
@@ -987,9 +951,8 @@ final class PdoPermissionRepository implements PermissionRepository {
     }
     ksort($details);
     $this->run(
-      'INSERT INTO audit_log(created_at, actor, action, subject_type, subject_id, details_json'
-      . $this->scope->column() . ')
-       VALUES (?, ?, ?, ?, ?, ?' . $this->scope->placeholder() . ')',
+      'INSERT INTO audit_log(created_at, actor, action, subject_type, subject_id, details_json)
+       VALUES (?, ?, ?, ?, ?, ?)',
       [
         $timestamp,
         substr($actor, 0, 128),
@@ -1001,8 +964,7 @@ final class PdoPermissionRepository implements PermissionRepository {
         json_encode(
           $details === [] ? new \stdClass() : $details,
           JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES
-        ),
-        ...$this->scope->auditParams()
+        )
       ]
     );
   }

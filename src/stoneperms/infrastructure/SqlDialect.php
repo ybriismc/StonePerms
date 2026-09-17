@@ -12,12 +12,11 @@ use Throwable;
 *
 * The store is written once. Everything it does — encoding nodes, loading a
 * snapshot, applying an editor batch, writing the audit log — is the same SQL
-* on every engine except the handful of statements below, and each engine
-* supplies its own wording for those.
+* on every engine except what is here: the connection, the schema, a handful
+* of upserts, which table holds this server's players, and what a revision is.
 *
-* The engine also decides what a revision is. On a database used by one server
-* a counter in memory is enough. On a shared one the number has to live in the
-* database, because it is how the other servers learn that something changed.
+* On a file the revision is a counter in memory. On a shared database it lives
+* in a row, because it is how the other servers learn that something changed.
 */
 interface SqlDialect {
 
@@ -34,12 +33,11 @@ interface SqlDialect {
 
   public function close(): void;
 
-  /**
-  * Schema versions in order, each a list of statements applied in one go.
-  *
-  * @return array<int, list<string>>
-  */
-  public function migrations(): array;
+  /** Creates or upgrades the schema, and whatever this server needs of its own. */
+  public function prepareStore(PDO $pdo): void;
+
+  /** The table holding this server's players. */
+  public function usersTable(): string;
 
   public function insertGroupIfMissing(): string;
 
@@ -50,10 +48,10 @@ interface SqlDialect {
   public function upsertProfile(): string;
 
   /**
-  * Appended to a comparison or an ordering that must ignore case. SQLite needs
-  * it spelled out; MySQL gets it from the column's collation.
+  * Refuses an XUID that already belongs to another player, where the engine
+  * cannot say so itself.
   */
-  public function caseInsensitive(): string;
+  public function validateIdentity(PDO $pdo, string $uniqueId, ?string $xuid): void;
 
   /**
   * Records that data changed and returns the new revision. Called inside the
@@ -66,11 +64,9 @@ interface SqlDialect {
   public function readRevision(PDO $pdo, int $current): int;
 
   /**
-  * The revision, held against other writers until this transaction ends.
-  *
-  * An editor batch checks the revision it was built against and then writes.
-  * Without the lock two servers could both pass that check and both write,
-  * and the second would quietly undo the first.
+  * The revision, held against other writers until this transaction ends. Taken
+  * at the start of every write, so two servers writing at once are serialised
+  * and each one sees what the other committed.
   */
   public function lockRevision(PDO $pdo, int $current): int;
 

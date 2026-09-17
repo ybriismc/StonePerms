@@ -13,10 +13,10 @@ use Throwable;
 /**
 * SQLite, one file in the plugin's data folder.
 *
-* This is the default and it is unchanged: the schema is still byte-for-byte
-* the one the Endstone build writes, so a `stoneperms.db` produced by either
-* plugin still opens in the other. A file is used by one server, so the
-* revision stays a counter in memory.
+* The default, and unchanged: the schema is still the one the Endstone build
+* writes, so a `stoneperms.db` produced by either plugin opens in the other. A
+* file is used by one server, so its players need no dividing and the revision
+* stays a counter in memory.
 */
 final class SqliteDialect implements SqlDialect {
 
@@ -62,12 +62,35 @@ final class SqliteDialect implements SqlDialect {
     $this->database = null;
   }
 
-  public function migrations(): array {
-    $migrations = [];
-    foreach (SqliteSchema::migrations() as $version => $sql) {
-      $migrations[$version] = [$sql];
+  public function prepareStore(PDO $pdo): void {
+    $migrations = SqliteSchema::migrations();
+    $pdo->exec($migrations[1]);
+
+    $current = (int) ($pdo->query('SELECT MAX(version) AS version FROM schema_migrations')
+      ->fetch()['version'] ?? 0);
+    if ($current > SqliteSchema::VERSION) {
+      throw new RuntimeException(
+        "StonePerms database schema $current is newer than supported " . SqliteSchema::VERSION
+      );
     }
-    return $migrations;
+
+    for ($version = max(1, $current + 1); $version <= SqliteSchema::VERSION; $version++) {
+      if ($version > 1) {
+        $pdo->exec($migrations[$version]);
+      }
+      if ($version > $current) {
+        $statement = $pdo->prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)');
+        $statement->execute([$version, time()]);
+      }
+    }
+
+    // A server that stopped without a clean shutdown leaves players marked
+    // online, and the dashboard would keep showing them.
+    $pdo->exec('UPDATE users SET online = 0 WHERE online <> 0');
+  }
+
+  public function usersTable(): string {
+    return 'users';
   }
 
   public function insertGroupIfMissing(): string {
@@ -126,9 +149,8 @@ final class SqliteDialect implements SqlDialect {
               online = excluded.online';
   }
 
-  public function caseInsensitive(): string {
-    return ' COLLATE NOCASE';
-  }
+  /** The partial unique index on the file says this for us. */
+  public function validateIdentity(PDO $pdo, string $uniqueId, ?string $xuid): void {}
 
   public function bumpRevision(PDO $pdo, int $current): int {
     return $current + 1;

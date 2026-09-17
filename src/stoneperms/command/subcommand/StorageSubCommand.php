@@ -54,19 +54,7 @@ final class StorageSubCommand extends StonePermsSubCommand {
       return;
     }
 
-    $scope = $storage->playerScope();
-    $sender->sendMessage(
-      '  §7players here: §f' . ($scope === ''
-        ? 'shared with every server'
-        : "this server's own (" . $scope . ')')
-    );
-    $sender->sendMessage('  §8groups, tracks and their nodes are always shared');
-
-    $unowned = $storage->unownedPlayers();
-    if ($unowned > 0) {
-      $sender->sendMessage(
-        '  §e' . $unowned . ' player row(s) belong to no server and are not visible here'
-      );
-    }
+    $sender->sendMessage('  §7players here: §f' . $storage->playerScope());
+    $sender->sendMessage('  §8groups, tracks and their nodes are shared with every server');
   }
 }

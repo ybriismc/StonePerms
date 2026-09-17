@@ -8,8 +8,9 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **MySQL storage.** `storage.driver: mysql` points several servers at one
-  database. There is a single set of rows that every server reads and writes,
+- **MySQL storage.** `storage.backend: mysql` points several servers at one
+  database — the same one the Endstone build opens, so a network can run both
+  plugins over one store. There is a single set of rows that every server reads and writes,
   so nothing is copied between servers and nothing is reconciled. Each write
   bumps a revision inside its own transaction and each server polls that row,
   which is how it learns that another server changed something and its cached
@@ -19,8 +20,8 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   everywhere — while the players and what each player has been given belong to
   the server that saw them. Somebody who is VIP on the lobby arrives at a
   minigame as whatever that server gives them, usually the default group. Each
-  server is identified by its own `contexts.server` name, and
-  `storage.mysql.share_players: true` asks for one set of players instead.
+  server is identified by its own `storage.server_id`, which names the table
+  holding its players.
 - **`/stoneperms storage`.** Says where the data lives, whether other servers
   can write there, and whether the players here are this server's own.
 - The startup report and `/stoneperms info` say which store is in use.

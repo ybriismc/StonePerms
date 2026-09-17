@@ -8,22 +8,20 @@ use stoneperms\domain\SubjectRef;
 use stoneperms\domain\SubjectType;
 
 /**
-* Which rows in a shared database belong to this server.
+* Which nodes in a shared database belong to this server.
 *
 * Groups, tracks and everything hanging off a group are the network's: one
-* definition, seen by every server. What a *player* has is the server's own —
-* the rows in `users` and the nodes attached to a user — so a player who is VIP
-* on the lobby arrives at a minigame as whatever that server says, usually the
-* default group.
+* definition, seen by every server. What a *player* was given is the server's
+* own, so somebody who is VIP on the lobby arrives at a minigame as whatever
+* that server gives them, usually the default group.
 *
-* The split is a column, not a second set of tables: one schema, one
-* transaction, one revision, and a query that names its server. A row a server
-* did not write is not merely hidden from it — no statement it runs can read
-* or delete one.
+* A player's rows live in this server's own user table; the nodes given to
+* them sit in the shared table and name their server in a column. A node a
+* server did not write is not merely hidden from it — no statement it runs can
+* read or delete one.
 *
 * The scope is off for SQLite, which is one server's file and needs no
-* dividing, and off when a network asks for its players to be shared, where
-* every row simply carries the same empty owner.
+* dividing.
 */
 final class ServerScope {
 
@@ -42,16 +40,6 @@ final class ServerScope {
 
   public function isEnabled(): bool {
     return $this->server !== '';
-  }
-
-  /** Appended to a query against `users`, which is per server outright. */
-  public function userFilter(): string {
-    return $this->isEnabled() ? ' AND server = ?' : '';
-  }
-
-  /** The same, for a query that has no WHERE of its own yet. */
-  public function userWhere(): string {
-    return $this->isEnabled() ? ' WHERE server = ?' : '';
   }
 
   /**
@@ -88,10 +76,5 @@ final class ServerScope {
       return [];
     }
     return [$subject->type === SubjectType::USER ? $this->server : ''];
-  }
-
-  /** @return list<string> */
-  public function auditParams(): array {
-    return $this->isEnabled() ? [$this->server] : [];
   }
 }

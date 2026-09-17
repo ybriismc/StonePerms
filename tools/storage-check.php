@@ -104,7 +104,9 @@ foreach (['pdo_sqlite', 'pdo_mysql'] as $extension) {
   }
 }
 
-$dialect = static fn(): MysqlDialect => new MysqlDialect($host, $port, $database, $username, $password);
+$dialect = static fn(string $server = 'check'): MysqlDialect => new MysqlDialect(
+  $host, $port, $database, $username, $password, $server
+);
 
 // Refuse a database that already holds data: this is a check, not a migration.
 try {
@@ -297,10 +299,7 @@ $mysql = scenario($dialect());
 // no longer match its placeholders.
 fresh($dialect()->open());
 $owned = ServerScope::of('lobby1');
-$scoped = scenario(
-  new MysqlDialect($host, $port, $database, $username, $password, 'utf8mb4', $owned),
-  $owned
-);
+$scoped = scenario($dialect('lobby1'), $owned);
 
 foreach ($sqlite as $key => $value) {
   $check($key, $mysql[$key] ?? '<missing>', (string) $value);
@@ -371,7 +370,7 @@ $minigame->close();
 echo "\nPlayers belong to their server, definitions belong to the network\n";
 fresh($dialect()->open());
 $scoped = static fn(string $server): PdoPermissionRepository => new PdoPermissionRepository(
-  new MysqlDialect($host, $port, $database, $username, $password, 'utf8mb4', ServerScope::of($server)),
+  $dialect($server),
   ServerScope::of($server)
 );
 
@@ -442,16 +441,16 @@ $check(
 $lobby->close();
 $minigame->close();
 
-// asking for one set of players gives the opposite behaviour
+// the same server id is the same server, wherever it runs
 fresh($dialect()->open());
-$shared1 = new PdoPermissionRepository($dialect());
-$shared1->initialize('default');
-$shared2 = new PdoPermissionRepository($dialect());
-$shared2->initialize('default');
-$shared1->upsertUser(new UserRecord(UUID, 'yBriisMC'));
-$check('share_players puts them on both', $shared2->findUser('yBriisMC')?->lastName, 'yBriisMC');
-$shared1->close();
-$shared2->close();
+$same1 = $scoped('lobby1');
+$same1->initialize('default');
+$same2 = $scoped('lobby1');
+$same2->initialize('default');
+$same1->upsertUser(new UserRecord(UUID, 'yBriisMC'));
+$check('one server id, one set of players', $same2->findUser('yBriisMC')?->lastName, 'yBriisMC');
+$same1->close();
+$same2->close();
 
 // ---------------------------------------------------------------------------
 fresh($dialect()->open());

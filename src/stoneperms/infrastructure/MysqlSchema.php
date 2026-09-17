@@ -5,16 +5,15 @@ declare(strict_types = 1);
 namespace stoneperms\infrastructure;
 
 /**
-* The permission database on MySQL.
+* The permission database on MySQL, as the Endstone build writes it.
 *
-* The tables carry the same names, columns and meaning as the SQLite schema, so
-* the store above them is the same code. What changes is only what the engine
-* requires: an indexed key needs a length, a partial index has no equivalent
-* and becomes a plain one, and case-insensitive comparison comes from the
-* collation instead of being spelled out per query.
+* Every table, column, type, index and collation here matches that build
+* statement for statement, because the two plugins are meant to share one
+* database: a network can run both and see one set of groups and tracks.
 *
-* `shared_state` is the one table SQLite does not have. It holds the revision,
-* which is how a server learns that another server changed something.
+* `storage_state` holds the revision a server polls to learn that another
+* server changed something. `storage_servers` maps a server to its own user
+* table, since a player belongs to the server that saw them.
 */
 final class MysqlSchema {
 
@@ -28,142 +27,137 @@ final class MysqlSchema {
     ];
   }
 
+  public const MIGRATIONS_TABLE = <<<'SQL'
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      applied_at BIGINT NOT NULL
+  ) ENGINE=InnoDB
+  SQL;
+
+  /** The per-server user table, named after the server it belongs to. */
+  public const USER_SCHEMA = <<<'SQL'
+  CREATE TABLE IF NOT EXISTS %s (
+      unique_id VARCHAR(128) PRIMARY KEY,
+      xuid VARCHAR(64) UNIQUE,
+      last_name VARCHAR(256) NOT NULL,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      locale TEXT,
+      device_os TEXT,
+      game_version TEXT,
+      game_mode TEXT,
+      ping_ms INTEGER,
+      total_exp BIGINT,
+      exp_level INTEGER,
+      skin_id TEXT,
+      skin_hash VARCHAR(128),
+      skin_width INTEGER,
+      skin_height INTEGER,
+      skin_rgba LONGBLOB,
+      cape_id TEXT,
+      first_seen_at BIGINT,
+      last_seen_at BIGINT,
+      last_joined_at BIGINT,
+      last_quit_at BIGINT,
+      skin_updated_at BIGINT,
+      online INTEGER NOT NULL DEFAULT 0,
+      INDEX users_last_name_lookup (last_name(128)),
+      INDEX users_last_seen_lookup (last_seen_at),
+      INDEX users_online_lookup (online, last_seen_at),
+      CHECK (online IN (0, 1))
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+  SQL;
+
   /** @return list<string> */
   private static function migration1(): array {
     return [
       <<<'SQL'
-      CREATE TABLE IF NOT EXISTS users (
-          unique_id VARCHAR(64) NOT NULL,
-          xuid VARCHAR(32) NULL,
-          last_name VARCHAR(64) NOT NULL,
-          created_at BIGINT NOT NULL,
-          updated_at BIGINT NOT NULL,
-          locale VARCHAR(32) NULL,
-          device_os VARCHAR(32) NULL,
-          game_version VARCHAR(32) NULL,
-          game_mode VARCHAR(32) NULL,
-          ping_ms INT NULL,
-          total_exp INT NULL,
-          exp_level INT NULL,
-          skin_id VARCHAR(191) NULL,
-          skin_hash VARCHAR(128) NULL,
-          skin_width INT NULL,
-          skin_height INT NULL,
-          skin_rgba MEDIUMBLOB NULL,
-          cape_id VARCHAR(191) NULL,
-          first_seen_at BIGINT NULL,
-          last_seen_at BIGINT NULL,
-          last_joined_at BIGINT NULL,
-          last_quit_at BIGINT NULL,
-          skin_updated_at BIGINT NULL,
-          online TINYINT NOT NULL DEFAULT 0,
-          PRIMARY KEY (unique_id),
-          UNIQUE KEY users_xuid_unique (xuid),
-          KEY users_last_name_lookup (last_name),
-          KEY users_last_seen_lookup (last_seen_at),
-          KEY users_online_lookup (online, last_seen_at)
-      ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci
+      CREATE TABLE IF NOT EXISTS storage_state (
+          id INTEGER PRIMARY KEY,
+          revision BIGINT NOT NULL
+      ) ENGINE=InnoDB
+      SQL,
+      <<<'SQL'
+      CREATE TABLE IF NOT EXISTS storage_servers (
+          server_id VARCHAR(128) PRIMARY KEY,
+          users_table VARCHAR(64) NOT NULL UNIQUE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
       SQL,
       <<<'SQL'
       CREATE TABLE IF NOT EXISTS permission_groups (
-          name VARCHAR(64) NOT NULL,
-          display_name VARCHAR(64) NOT NULL,
-          weight INT NOT NULL DEFAULT 0,
+          name VARCHAR(64) PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          weight BIGINT NOT NULL DEFAULT 0,
           created_at BIGINT NOT NULL,
-          updated_at BIGINT NOT NULL,
-          PRIMARY KEY (name)
-      ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci
+          updated_at BIGINT NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
       SQL,
       <<<'SQL'
       CREATE TABLE IF NOT EXISTS nodes (
-          id BIGINT NOT NULL AUTO_INCREMENT,
-          subject_type VARCHAR(8) NOT NULL,
-          subject_id VARCHAR(64) NOT NULL,
+          id BIGINT PRIMARY KEY AUTO_INCREMENT,
+          subject_type VARCHAR(16) NOT NULL,
+          subject_id VARCHAR(128) NOT NULL,
           node_type VARCHAR(16) NOT NULL,
-          node_key VARCHAR(191) NOT NULL,
-          node_value TEXT NOT NULL,
-          contexts_json TEXT NOT NULL,
-          expires_at BIGINT NULL,
-          priority INT NOT NULL DEFAULT 0,
+          node_key TEXT NOT NULL,
+          node_value LONGTEXT NOT NULL,
+          contexts_json LONGTEXT NOT NULL,
+          expires_at BIGINT,
+          priority BIGINT NOT NULL DEFAULT 0,
           created_at BIGINT NOT NULL,
-          PRIMARY KEY (id),
-          KEY nodes_subject_lookup (subject_type, subject_id),
-          KEY nodes_expiry_lookup (expires_at),
-          KEY nodes_permission_lookup (node_type, node_key),
-          CONSTRAINT nodes_subject_type CHECK (subject_type IN ('user', 'group')),
-          CONSTRAINT nodes_node_type CHECK (node_type IN ('permission', 'parent', 'meta', 'prefix', 'suffix'))
-      ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci
+          server VARCHAR(128) NOT NULL DEFAULT '',
+          INDEX nodes_subject_lookup (subject_type, subject_id),
+          INDEX nodes_server_lookup (server, subject_type, subject_id),
+          INDEX nodes_expiry_lookup (expires_at),
+          INDEX nodes_permission_lookup (node_type, node_key(128)),
+          CHECK (subject_type IN ('user', 'group')),
+          CHECK (node_type IN ('permission', 'parent', 'meta', 'prefix', 'suffix'))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
       SQL,
       <<<'SQL'
       CREATE TABLE IF NOT EXISTS audit_log (
-          id BIGINT NOT NULL AUTO_INCREMENT,
+          id BIGINT PRIMARY KEY AUTO_INCREMENT,
           created_at BIGINT NOT NULL,
-          actor VARCHAR(64) NOT NULL,
-          action VARCHAR(64) NOT NULL,
-          subject_type VARCHAR(8) NULL,
-          subject_id VARCHAR(64) NULL,
-          details_json MEDIUMTEXT NOT NULL,
-          PRIMARY KEY (id),
-          KEY audit_created_lookup (created_at, id)
-      ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci
+          actor VARCHAR(128) NOT NULL,
+          action VARCHAR(128) NOT NULL,
+          subject_type VARCHAR(16),
+          subject_id VARCHAR(128),
+          details_json LONGTEXT NOT NULL,
+          INDEX audit_created_lookup (created_at, id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
       SQL,
       <<<'SQL'
       CREATE TABLE IF NOT EXISTS tracks (
-          name VARCHAR(64) NOT NULL,
+          name VARCHAR(64) PRIMARY KEY,
           created_at BIGINT NOT NULL,
-          updated_at BIGINT NOT NULL,
-          PRIMARY KEY (name)
-      ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci
+          updated_at BIGINT NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
       SQL,
       <<<'SQL'
       CREATE TABLE IF NOT EXISTS track_groups (
           track_name VARCHAR(64) NOT NULL,
           group_name VARCHAR(64) NOT NULL,
-          position INT NOT NULL,
+          position INTEGER NOT NULL,
           PRIMARY KEY (track_name, group_name),
-          UNIQUE KEY track_groups_position_unique (track_name, position),
-          KEY track_groups_position_lookup (track_name, position),
-          CONSTRAINT track_groups_position_positive CHECK (position >= 0),
-          CONSTRAINT track_groups_track FOREIGN KEY (track_name) REFERENCES tracks(name)
-              ON DELETE CASCADE ON UPDATE CASCADE,
-          CONSTRAINT track_groups_group FOREIGN KEY (group_name) REFERENCES permission_groups(name)
-              ON DELETE RESTRICT
-      ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci
-      SQL,
-      <<<'SQL'
-      CREATE TABLE IF NOT EXISTS shared_state (
-          id TINYINT NOT NULL,
-          revision BIGINT NOT NULL DEFAULT 0,
-          PRIMARY KEY (id)
-      ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci
-      SQL,
-      'INSERT IGNORE INTO shared_state(id, revision) VALUES (1, 0)'
+          UNIQUE (track_name, position),
+          FOREIGN KEY (track_name) REFERENCES tracks(name) ON DELETE CASCADE ON UPDATE CASCADE,
+          FOREIGN KEY (group_name) REFERENCES permission_groups(name) ON DELETE RESTRICT,
+          CHECK (position >= 0)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+      SQL
     ];
   }
 
   /**
-  * Says who owns a row.
-  *
-  * A group and everything hanging off it belongs to the network and carries no
-  * owner. A player, and every node attached to a player, belongs to the server
-  * that saw them, so two servers can know the same person differently — VIP on
-  * the lobby, default on a minigame — out of one database.
-  *
-  * An empty owner is what a network that wants its players shared writes
-  * everywhere, which is also what these columns default to, so a store built
-  * before this migration keeps behaving exactly as it did.
+  * A group belongs to the network and carries no server. A node attached to a
+  * player belongs to the server that gave it, so the same person can be VIP on
+  * one server and default on another out of one database.
   *
   * @return list<string>
   */
   private static function migration2(): array {
     return [
-      "ALTER TABLE users ADD COLUMN server VARCHAR(64) NOT NULL DEFAULT ''",
-      'ALTER TABLE users DROP PRIMARY KEY, ADD PRIMARY KEY (unique_id, server)',
-      'ALTER TABLE users DROP INDEX users_xuid_unique, ADD UNIQUE KEY users_xuid_unique (xuid, server)',
-      'ALTER TABLE users ADD KEY users_server_lookup (server, last_name)',
-      "ALTER TABLE nodes ADD COLUMN server VARCHAR(64) NOT NULL DEFAULT ''",
-      'ALTER TABLE nodes ADD KEY nodes_server_lookup (server, subject_type, subject_id)',
-      "ALTER TABLE audit_log ADD COLUMN server VARCHAR(64) NOT NULL DEFAULT ''"
+      "ALTER TABLE nodes ADD COLUMN server VARCHAR(128) NOT NULL DEFAULT ''",
+      'ALTER TABLE nodes ADD INDEX nodes_server_lookup (server, subject_type, subject_id)'
     ];
   }
 }

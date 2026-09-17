@@ -168,15 +168,6 @@ final class StonePermsPlugin extends PluginToolkit {
     $this->webConnector->start();
     StartupReport::log($this, $this->manager, $this->settings);
 
-    $unowned = $this->repository->unownedPlayers();
-    if ($unowned > 0) {
-      $this->getLogger()->warning(
-        "StonePerms found $unowned player row(s) in the database that belong to no server, from a "
-        . 'time when players were shared. This server does not see them. Set '
-        . 'storage.mysql.share_players to true to go back to one set of players, or clear them if '
-        . 'they are left over from a test.'
-      );
-    }
   }
 
   protected function onDisable(): void {
@@ -304,31 +295,19 @@ final class StonePermsPlugin extends PluginToolkit {
       $storage->database,
       $storage->username,
       $storage->password,
-      $storage->charset,
-      $scope
+      $storage->serverId,
+      $storage->connectTimeout,
+      $storage->sslCa
     );
   }
 
   /**
-  * Who owns the player rows in a shared database.
-  *
-  * A file is one server's already, and a network that asked for its players to
-  * be shared wants no division either. Otherwise the server's own context name
-  * is the owner, which is the same name that scopes a node with `server=`.
+  * Who owns the nodes given to a player in a shared database. A file is one
+  * server's already and needs no dividing.
   */
   private function createServerScope(): ServerScope {
     $storage = $this->settings->storage;
-    if (!$storage->isShared() || $storage->sharePlayers) {
-      return ServerScope::shared();
-    }
-    if ($this->settings->serverContext === 'global') {
-      $this->getLogger()->warning(
-        'StonePerms is on a shared database with contexts.server still set to "global", so every '
-        . 'server using that name keeps its players in the same place. Give this server its own '
-        . 'name in contexts.server, or set storage.mysql.share_players to true on purpose.'
-      );
-    }
-    return ServerScope::of($this->settings->serverContext);
+    return $storage->isShared() ? ServerScope::of($storage->serverId) : ServerScope::shared();
   }
 
   /**
@@ -381,7 +360,7 @@ final class StonePermsPlugin extends PluginToolkit {
     // between servers: when it moves, another server wrote something and every
     // snapshot cached here was built before it.
     if ($this->repository->isShared()) {
-      TaskSchedulerAPI::repeat($this->settings->storage->syncCheckTicks, function (): void {
+      TaskSchedulerAPI::repeat($this->settings->storage->syncTicks, function (): void {
         if (!$this->repository->refreshSharedRevision()) {
           return;
         }

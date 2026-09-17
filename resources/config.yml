@@ -7,35 +7,40 @@ debug: false
 storage:
   # "sqlite" keeps the data in this server's own file and needs nothing else.
   #
-  # "mysql" points this server at a database that other servers can share.
-  # There is one set of data, not a copy per server, so nothing is copied and
-  # nothing is synchronised: every server reads and writes the same rows, and
-  # each one polls a revision number to learn that another changed something.
-  # Scope what should differ per server with the "server" context.
-  driver: sqlite
+  # "mysql" points this server at a database that other servers share — the
+  # same database the Endstone build opens, so a network can run both. There is
+  # one set of rows, not a copy per server, so nothing is copied and nothing is
+  # synchronised: each server polls a revision to learn that another changed
+  # something.
+  #
+  # Groups, tracks and everything hanging off a group are shared. Players are
+  # not: each server keeps its own.
+  backend: sqlite
 
-  # The sqlite driver only: a filename inside this plugin's data folder.
+  # The sqlite backend only: a filename inside this plugin's data folder.
   database: stoneperms.db
 
-  # The mysql driver only.
+  # Required by the mysql backend. Names this server, must be unique and stable
+  # across the network, and selects the table holding this server's players.
+  server_id: ""
+
+  # How often to check whether another server changed something, in server
+  # ticks. 20 ticks is one second.
+  sync_ticks: 20
+
+  # The mysql backend only.
   mysql:
     host: 127.0.0.1
     port: 3306
     database: stoneperms
     username: stoneperms
     password: ""
-    charset: utf8mb4
-    # How often to check whether another server changed something, in server
-    # ticks. 20 ticks is one second.
-    sync_check_ticks: 20
-    # Groups, tracks and their nodes are always shared. Players are not: each
-    # server keeps its own, so someone who is VIP on the lobby arrives at a
-    # minigame with whatever that server gives them. Each server is identified
-    # by its own contexts.server name, so give every server a different one.
-    #
-    # Set this to true for the opposite: one set of players for the network,
-    # where a rank given anywhere is a rank everywhere.
-    share_players: false
+    connect_timeout: 5
+    # Kept so one config file serves both plugins. The PocketMine driver has no
+    # read timeout of its own and ignores this.
+    read_timeout: 10
+    # Path to a CA certificate to require TLS on the connection.
+    ssl_ca: ""
 
 permissions:
   # Group every player receives automatically.

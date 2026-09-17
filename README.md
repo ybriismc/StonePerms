@@ -169,16 +169,20 @@ one the Endstone build writes, so a `stoneperms.db` from either plugin opens in 
 
 ```yaml
 storage:
-  driver: mysql
+  backend: mysql
+  server_id: lobby1
+  sync_ticks: 20
   mysql:
     host: 127.0.0.1
     port: 3306
     database: stoneperms
     username: stoneperms
     password: "..."
-    sync_check_ticks: 20
-    share_players: false
 ```
+
+This is the same database the Endstone build of StonePerms opens — same tables, same types, same
+per-server user tables — so a network can run both plugins over one store and see one set of groups
+and tracks.
 
 Every server pointed at that database reads and writes **the same rows**. Nothing is copied between
 servers and nothing is reconciled, because there are no copies to reconcile — the way several people
@@ -198,12 +202,9 @@ it applies wherever that group is used. But **who has that group is each server'
 player who is VIP on the lobby walks into a minigame as whatever that server gives them, normally
 the default group.
 
-Each server is identified by its `contexts.server` name, so give every server a different one — with
-two servers both called `global` there is nothing to tell their players apart. The plugin says so on
-startup if it finds that.
-
-`share_players: true` asks for the opposite: one set of players for the whole network, where a rank
-given anywhere is a rank everywhere.
+Each server is identified by `storage.server_id`, which must be unique and stable: it names the
+table holding that server's players. `contexts.server` is separate and decides which nodes scoped
+with `server=` apply.
 
 Two things are worth knowing about the split:
 
@@ -212,9 +213,8 @@ Two things are worth knowing about the split:
   database would give.
 - Deleting a group deletes it for the network, and the assignments it left behind go with it on
   every server, not only on the one that ran the command.
-- Player rows written while players were shared belong to no server, so a server that now names its
-  own players does not see them. Nothing is lost, and the plugin says how many there are on startup
-  and in `/stoneperms storage status`.
+- Nodes stored before servers kept their own players carry no owner and stay readable everywhere, so
+  a database from an earlier build keeps behaving as it did until those assignments are made again.
 
 What does travel between servers is a number. Each write bumps a revision inside its own
 transaction, and each server polls that row — once a second by default — to learn that someone else
