@@ -24,6 +24,11 @@
 
 ---
 
+> **This plugin moved.** Development continues in
+> [EasyGroups](https://github.com/ybriismc/EasyGroups), together with
+> [EasyGroupsAPI](https://github.com/ybriismc/EasyGroupsAPI) and
+> [EasyGroupsWeb](https://github.com/ybriismc/EasyGroupsWeb).
+
 StonePerms stores and resolves permissions for PocketMine-MP and applies the result through the
 server's native `PermissionAttachment`, so checks keep working when the web stack is offline or was
 never set up. Permission data lives in the plugin's own SQLite database.
